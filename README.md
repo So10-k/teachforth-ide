@@ -1,42 +1,5 @@
 # TeachForth IDE
 
-Browser IDE and portal for TeachForth tutoring. Teachers and students sign in, open a project, and edit together. It is one small Node process and a SQLite file. It is not VS Code, and it is not a virtual machine per student.
-
-The repo is private. Treat it like a shared team codebase: read this before changing behavior, and do not commit secrets.
-
-## What it does
-
-An admin creates every account. There is no public signup.
-
-- **Admin** manages accounts, chapters, blocks, lessons, and sandboxes. Deleting a chapter removes its blocks, pairs, leads, and memberships. Accounts and session reports stay.
-- **Chapter lead** sees their chapter and the students who have a teacher in a live block.
-- **Teacher** opens a student's project only when paired in a live block, or when they are that block's session lead. A session lead is a normal teacher promoted for one block, not a separate account type.
-- **Student** sees only their own portfolio. Their TeachForth account becomes their GitHub account after they connect. Closing a project commits it and removes the local files. Only the student can commit.
-
-The editor is a dark, VS Code-style view: explorer, opened tabs only, hidden `.teachforth`, live cursors, and a shared board. Web pages and Python run in the browser. Nothing in this app runs student code on the server.
-
-## The terminal, preview, and published pages
-
-The right pane is a terminal. Type at the bottom, or press **Play** to run the open file. Ctrl+C stops a program. The server does not run the command. It only holds a line of text when Python calls `input()`, until this browser reads it.
-
-| Command | What it does |
-| --- | --- |
-| `python [file]` | Runs a `.py` file in Pyodide, or opens a prompt. `input()` reads the bottom line. |
-| `node <file>` | Runs a `.js` file in a sandboxed iframe. |
-| `ls`, `cat <file>` | Lists or prints project files. |
-| `teachforth serve` | Prints a private preview link. No port is opened. |
-| `help` | Lists these commands. |
-
-Play prints the same command it would run for the open file. A project with `index.html` uses `teachforth serve`. A `package.json` that mentions Next.js is not started. Student servers are not run on the VM.
-
-**Open** launches `/preview/<project id>/`. That page requires the same TeachForth login. The server checks that the person can open the project, then puts the HTML in an iframe with `sandbox="allow-scripts"` and no `allow-same-origin`. Do not serve student HTML as a normal same-origin page. A student script must not be able to call `/api/me`.
-
-**Publish** is for teachers who can open the project. Students cannot publish. It copies static files (`index.html`, CSS, JS, and a few text types) to the prod host. `.teachforth` is never published. The public link is:
-
-`https://teachforthprojects.samsprojects.xyz/p<id>-<title>/`
-
-That host is a different origin from the IDE and from the power panel. Published pages stay up when the Azure VM is off. Python projects cannot be published. Add `index.html` first.
-
 ## Layout
 
 ```
