@@ -59,7 +59,7 @@ export async function openEditor({ app, id, me, api, esc }) {
   const teacher = me.role !== "student";
   app.innerHTML = `<div class="ide">
     <header class="ide-titlebar">
-      <a class="logo" href="#/"><img src="/logo.png" alt="">TeachForth</a>
+      <a class="logo" href="#/"><img src="/logo.png" alt="">IDE</a>
       <span class="title">${esc(opened.project.title)}</span>
       <span class="spacer"></span>
       <span id="viewers"></span>
@@ -818,7 +818,7 @@ async function onTermSubmit(event) {
     const prefix = document.querySelector("#term-prompt").textContent || "";
     termLine(prefix + line);
     document.querySelector("#term-prompt").textContent = "";
-    input.placeholder = "";
+    input.placeholder = "running…";
     try {
       await session.api("/api/runtime/stdin", { method: "POST", body: { run: activeRun.id, line } });
     } catch (err) {

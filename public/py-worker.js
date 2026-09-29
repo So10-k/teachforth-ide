@@ -56,7 +56,6 @@ self.onmessage = async (event) => {
         emit("", decoder.decode(buffer, { stream: true }));
         return buffer.length;
       },
-      isatty: true,
     });
     pyodide.setStderr({
       write(buffer) {
@@ -67,11 +66,19 @@ self.onmessage = async (event) => {
     pyodide.setStdin({
       stdin() {
         self.postMessage({ type: "stdin" });
-        return readLine();
+        const line = readLine();
+        if (line == null) return null;
+        return line.endsWith("\n") ? line : `${line}\n`;
       },
-      autoEOF: false,
     });
-    await pyodide.runPythonAsync(`import sys\nsys.argv = ${JSON.stringify(msg.argv || ["python"])}`);
+    await pyodide.runPythonAsync(`import builtins, sys
+sys.argv = ${JSON.stringify(msg.argv || ["python"])}
+_print = builtins.print
+def print(*args, **kwargs):
+    kwargs.setdefault("flush", True)
+    _print(*args, **kwargs)
+builtins.print = print
+`);
     await pyodide.runPythonAsync(msg.code || "");
     if (!cancelled) self.postMessage({ type: "done" });
   } catch (err) {

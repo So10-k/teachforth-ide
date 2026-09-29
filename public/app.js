@@ -97,7 +97,7 @@ function shell(active) {
   const initial = esc((me.name || "?").slice(0, 1).toUpperCase());
   return `<div class="shell">
     <header class="topbar">
-      <a class="logo" href="#/"><img src="/logo.png" alt="">TeachForth</a>
+      <a class="logo" href="#/"><img src="/logo.png" alt="">IDE</a>
       <div class="top-actions">
         <button id="search-btn">Search <kbd>⌘K</kbd></button>
         <button id="help-btn">Help</button>
@@ -129,8 +129,8 @@ function bindShell() {
 
 function loginView() {
   app.innerHTML = `<div class="login-wrap"><form class="login-card" id="login">
-    <img src="/logo.png" alt="TeachForth" style="height:28px;width:auto">
-    <h1>TeachForth</h1>
+    <img src="/logo.png" alt="" style="height:28px;width:auto">
+    <h1>IDE</h1>
     <p class="muted">Sign in with the account a teacher made for you. After you connect GitHub, that account is this one.</p>
     <label>Email <input id="email" autocomplete="username"></label>
     <label>Password <input id="password" type="password" autocomplete="current-password"></label>
@@ -503,7 +503,7 @@ async function editorView(id) {
   const teacher = me.role !== "student";
   app.innerHTML = `<div class="ide">
     <header class="ide-top">
-      <a class="logo" href="#/"><img src="/logo.png" alt="">TeachForth</a>
+      <a class="logo" href="#/"><img src="/logo.png" alt="">IDE</a>
       <span class="title">${esc(opened.project.title)}</span>
       <span class="spacer"></span>
       <span id="viewers"></span>
