@@ -1,0 +1,4 @@
+data/
+deploy/keys/
+*.log
+.DS_Store

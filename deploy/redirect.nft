@@ -1,0 +1,7 @@
+table ip teachforth {
+  chain prerouting {
+    type nat hook prerouting priority dstnat
+    policy accept
+    tcp dport 80 redirect to :8080
+  }
+}

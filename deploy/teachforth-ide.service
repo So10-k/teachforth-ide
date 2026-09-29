@@ -1,0 +1,19 @@
+[Unit]
+Description=TeachForth IDE
+After=network-online.target teachforth-redirect.service
+Wants=network-online.target
+
+[Service]
+User=teachforth
+Group=teachforth
+WorkingDirectory=/opt/teachforth-ide
+Environment=PORT=8080
+Environment=HOST=0.0.0.0
+Environment=DATA_DIR=/var/lib/teachforth-ide
+Environment=IDLE_STAMP=/var/lib/teachforth-ide/last-request
+ExecStart=/usr/local/bin/node server/index.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

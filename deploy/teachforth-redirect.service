@@ -1,0 +1,12 @@
+[Unit]
+Description=Forward public port 80 to TeachForth IDE
+After=network-online.target
+Before=teachforth-ide.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /opt/teachforth-ide/deploy/redirect.nft
+
+[Install]
+WantedBy=multi-user.target

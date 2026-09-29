@@ -1,0 +1,14 @@
+{
+  "name": "teachforth-ide",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TeachForth IDE pilot. Browser editor, admin-assigned teachers, SQLite.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node server/selftest.js"
+  }
+}

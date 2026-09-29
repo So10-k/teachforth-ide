@@ -1,0 +1,11 @@
+[Unit]
+Description=Check whether TeachForth IDE is idle
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=TeachForth published sites receiver
+After=network.target
+
+[Service]
+WorkingDirectory=/root/teachforth-ide
+Environment=HOST=127.0.0.1
+Environment=PORT=8792
+Environment=PROJECTS_DIR=/var/www/teachforth-projects
+Environment=PUBLISH_TOKEN_FILE=/var/lib/teachforth-projects/token
+Environment=PUBLISH_PUBLIC_URL=https://teachforthprojects.samsprojects.xyz
+ExecStart=/root/.nvm/versions/node/v24.16.0/bin/node /root/teachforth-ide/deploy/projects-server.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

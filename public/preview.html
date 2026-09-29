@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TeachForth preview</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body class="preview-page">
+  <header class="preview-bar">
+    <a href="/">TeachForth</a>
+    <span id="title">Preview</span>
+    <span class="spacer"></span>
+    <span id="status"></span>
+  </header>
+  <iframe id="preview" sandbox="allow-scripts" title="Project preview" hidden></iframe>
+  <form id="gate" class="login-card preview-gate" hidden>
+    <h1>TeachForth</h1>
+    <p class="muted">Sign in to open this project. The link only works for someone who can open it.</p>
+    <label>Email<input id="email" type="email" autocomplete="username" required></label>
+    <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+    <button class="btn" type="submit">Sign in</button>
+    <p id="gate-error" class="error"></p>
+  </form>
+  <script type="module">
+    import { previewDocument } from "/preview-doc.js";
+
+    const id = location.pathname.split("/").filter(Boolean)[1];
+    const frame = document.querySelector("#preview");
+    const gate = document.querySelector("#gate");
+    const status = document.querySelector("#status");
+    let files = [];
+
+    document.querySelector("#gate").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const res = await fetch("/api/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          email: document.querySelector("#email").value,
+          password: document.querySelector("#password").value,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        document.querySelector("#gate-error").textContent = data.error || "Sign in failed";
+        return;
+      }
+      location.reload();
+    });
+
+    window.addEventListener("message", (event) => {
+      if (event.source !== frame.contentWindow || event.data?.type !== "tf-nav") return;
+      show(event.data.href);
+    });
+
+    boot();
+
+    async function boot() {
+      const me = await fetch("/api/me", { credentials: "same-origin" });
+      const meData = await me.json().catch(() => ({}));
+      if (!meData.user) {
+        gate.hidden = false;
+        status.textContent = "Sign in required";
+        return;
+      }
+      const res = await fetch(`/api/projects/${id}`, { credentials: "same-origin" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        status.textContent = data.error || "Cannot open this preview";
+        return;
+      }
+      files = data.files || [];
+      document.querySelector("#title").textContent = data.project?.title || "Preview";
+      frame.hidden = false;
+      show(new URLSearchParams(location.search).get("file") || "index.html");
+    }
+
+    function show(entry) {
+      const clean = String(entry || "index.html").replace(/^\.\//, "").split(/[?#]/)[0];
+      if (!clean || clean.includes("..") || clean.startsWith("/")) return;
+      frame.srcdoc = previewDocument(files, clean);
+      const next = new URL(location.href);
+      next.searchParams.set("file", clean);
+      history.replaceState(null, "", next);
+    }
+  </script>
+</body>
+</html>

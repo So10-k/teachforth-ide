@@ -1,0 +1,9 @@
+[Unit]
+Description=Shut down TeachForth IDE when idle
+
+[Service]
+Type=oneshot
+Environment=TEACHFORTH_ALLOW_SHUTDOWN=1
+Environment=IDLE_STAMP=/var/lib/teachforth-ide/last-request
+Environment=IDLE_SHUTDOWN_MINUTES=90
+ExecStart=/opt/teachforth-ide/deploy/idle-shutdown.sh
