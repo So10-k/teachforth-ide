@@ -32,6 +32,7 @@ window.addEventListener("pagehide", () => {
 });
 
 export async function openEditor({ app, id, me, api, esc }) {
+  interrupt(true);
   session = { me, api, esc };
   closing = false;
   let opened;
@@ -93,7 +94,13 @@ export async function openEditor({ app, id, me, api, esc }) {
           <button id="open-window" hidden>Open</button>
           ${teacher ? `<button id="publish">Publish</button>` : ""}
         </div>
-        <div id="term" class="term" role="log"></div>
+        <div id="term" class="term">
+          <div id="term-log" role="log"></div>
+          <form id="term-form" class="term-form" autocomplete="off">
+            <span id="term-prompt" class="prompt"></span>
+            <input id="term-input" spellcheck="false" autocapitalize="off" aria-label="Terminal command">
+          </form>
+        </div>
         <iframe id="runner" sandbox="allow-scripts" title="Runner"></iframe>
       </section>
     </div>
@@ -122,6 +129,7 @@ export async function openEditor({ app, id, me, api, esc }) {
 }
 
 async function leaveProject() {
+  interrupt(true);
   const back = editorState?.project?.kind === "sandbox" ? "#/sandbox" : "#/";
   if (session?.me?.role === "student" && editorState?.project?.kind === "github") {
     try {
@@ -532,26 +540,59 @@ function setSaveState(text) {
   if (el) el.textContent = text;
 }
 
-let runToken = 0;
+let runGen = 0;
+let activeRun = null;
+let inputMode = "shell";
+let pendingOut = "";
+let pendingKind = "";
+let waitingInput = false;
+let runOutput = "";
+let pyWorker = null;
+let jsListener = null;
+let termHistory = [];
+let historyIndex = 0;
+let historyDraft = "";
+
+const PYTHON_REPL = `import traceback
+while True:
+    try:
+        line = input(">>> ")
+    except EOFError:
+        break
+    if line.strip() in ("exit", "exit()", "quit", "quit()"):
+        break
+    try:
+        exec(compile(line, "<stdin>", "single"))
+    except Exception:
+        traceback.print_exc()
+`;
 
 function welcomeTerm() {
-  termLine("TeachForth space ready. Press ▶ to run the open file.", "muted");
-  termLine("Python and JavaScript run in this browser. A web page opens on a private link.", "muted");
+  const form = document.querySelector("#term-form");
+  const input = document.querySelector("#term-input");
+  if (form && !form.dataset.bound) {
+    form.dataset.bound = "1";
+    form.addEventListener("submit", onTermSubmit);
+    input.addEventListener("keydown", onTermKey);
+    document.querySelector("#term").addEventListener("click", (event) => {
+      if (event.target !== input) input.focus();
+    });
+  }
+  setShellPrompt();
+  termLine("Type a command, or press ▶ to run the open file.", "muted");
+  termLine("help lists commands. Ctrl+C stops a program. input() reads this line.", "muted");
 }
 
 async function play() {
-  const token = ++runToken;
+  if (activeRun) {
+    interrupt();
+    return;
+  }
   await flush();
-  if (token !== runToken || !editorState) return;
+  if (!editorState) return;
   const plan = planRun(editorState.active || "");
-  termCommand(plan.cmd);
-  document.querySelector("#open-window").hidden = plan.kind !== "web";
-  if (plan.kind === "python") return runPython(plan.file, token);
-  if (plan.kind === "node") return runJs(plan.file, token);
-  if (plan.kind === "markdown") return previewMarkdown(plan.file);
-  if (plan.kind === "web") return serveWeb(plan);
-  if (plan.kind === "next") return explainNext();
-  termLine(plan.note || "Open a Python, JavaScript, or HTML file, then press play.", "muted");
+  commitShellLine(plan.cmd);
+  await dispatch(plan);
 }
 
 function planRun(path) {
@@ -606,22 +647,41 @@ async function publishSite() {
   }
 }
 
-function runJs(path, token) {
+function runJs(path, argv = []) {
+  const found = resolveFile(path);
+  if (!path || found.error || !found.path.endsWith(".js")) {
+    termLine(found.error ? `node: ${found.error}` : "node: pass a .js file, like node main.js", "err");
+    return;
+  }
+  const gen = runGen;
+  activeRun = { id: null, gen, kind: "node" };
+  runOutput = "";
+  setRunning(true);
   const iframe = document.querySelector("#runner");
-  const code = fileContent(path);
-  const onMessage = (event) => {
-    if (token !== runToken || event.source !== iframe.contentWindow) return;
-    if (event.data?.type === "log") termLine(String(event.data.text ?? ""));
-    if (event.data?.type === "err") termLine(String(event.data.text ?? ""), "err");
-    if (event.data?.type === "ready") iframe.contentWindow?.postMessage({ type: "run", code }, "*");
+  const code = fileContent(found.path);
+  const args = argv.length ? argv.map((item, index) => (index === 1 ? found.path : item)) : ["node", found.path];
+  clearJsListener();
+  jsListener = (event) => {
+    if (gen !== runGen || event.source !== iframe.contentWindow) return;
+    if (event.data?.type === "log") {
+      runOutput += `${event.data.text ?? ""}\n`;
+      termLine(String(event.data.text ?? ""));
+    }
+    if (event.data?.type === "err") {
+      runOutput += `${event.data.text ?? ""}\n`;
+      termLine(String(event.data.text ?? ""), "err");
+    }
+    if (event.data?.type === "ready") iframe.contentWindow?.postMessage({ type: "run", code, argv: args }, "*");
     if (event.data?.type === "done") {
-      window.removeEventListener("message", onMessage);
+      clearJsListener();
       termLine("exited", "muted");
+      finishRun();
     }
   };
-  window.addEventListener("message", onMessage);
+  window.addEventListener("message", jsListener);
   iframe.srcdoc = `<!DOCTYPE html><body><script>
     const send = (type, text) => parent.postMessage({ type, text }, "*");
+    self.process = { argv: ["node"] };
     for (const name of ["log", "info", "warn", "error"]) {
       console[name] = (...args) => send(name === "error" ? "err" : "log", args.map((item) => {
         try { return typeof item === "string" ? item : JSON.stringify(item); }
@@ -631,7 +691,11 @@ function runJs(path, token) {
     window.addEventListener("error", (event) => send("err", event.message || "Error"));
     window.addEventListener("message", (event) => {
       if (event.data?.type !== "run") return;
-      try { (0, eval)(event.data.code || ""); send("done", ""); }
+      try {
+        self.process.argv = event.data.argv || ["node"];
+        (0, eval)(event.data.code || "");
+        send("done", "");
+      }
       catch (err) { send("err", err && err.message ? err.message : String(err)); send("done", ""); }
     });
     send("ready", "");
@@ -643,59 +707,374 @@ function previewMarkdown(path) {
   termLine(text || "(empty)", text ? "" : "muted");
 }
 
-async function runPython(path, token) {
-  termLine("Loading Python…", "muted");
+async function runPython(path, argv = []) {
+  let code = PYTHON_REPL;
+  let args = ["python"];
+  if (path) {
+    const found = resolveFile(path);
+    if (found.error || !found.path.endsWith(".py")) {
+      termLine(found.error ? `python: ${found.error}` : "python: pass a .py file", "err");
+      return;
+    }
+    code = fileContent(found.path);
+    args = ["python", found.path, ...argv];
+  } else {
+    termLine("Python prompt. exit() or Ctrl+C to leave.", "muted");
+  }
+  let started;
   try {
-    const pyodide = await loadPyodide();
-    if (token !== runToken) return;
-    let text = "";
-    pyodide.setStdout({ batched: (line) => { if (token === runToken) { text += `${line}\n`; termLine(line); } } });
-    pyodide.setStderr({ batched: (line) => { if (token === runToken) { text += `${line}\n`; termLine(line, "err"); } } });
-    await pyodide.runPythonAsync(fileContent(path) || currentContent());
-    if (token !== runToken) return;
-    if (!text) termLine("(no output)", "muted");
-    await session.api(`/api/projects/${editorState.id}/run`, { method: "POST", body: { output: text || "(no output)" } });
+    started = await session.api("/api/runtime/runs", { method: "POST", body: {} });
   } catch (err) {
-    if (token === runToken) termLine(err.message || String(err), "err");
+    termLine(err.message || "Could not start Python", "err");
+    return;
+  }
+  if (!editorState) return;
+  const gen = runGen;
+  activeRun = { id: started.runId, gen, kind: "python" };
+  pendingOut = "";
+  pendingKind = "";
+  runOutput = "";
+  setRunning(true);
+  const worker = ensureWorker();
+  worker.postMessage({ type: "run", runId: started.runId, code, argv: args, gen });
+}
+
+function ensureWorker() {
+  if (pyWorker) return pyWorker;
+  pyWorker = new Worker("/py-worker.js", { type: "module" });
+  pyWorker.onmessage = onWorkerMessage;
+  pyWorker.onerror = (event) => {
+    termLine(event.message || "Python failed to start", "err");
+    pyWorker?.terminate();
+    pyWorker = null;
+    finishRun();
+  };
+  return pyWorker;
+}
+
+function onWorkerMessage(event) {
+  const msg = event.data || {};
+  if (!activeRun || activeRun.gen !== runGen || activeRun.kind !== "python") return;
+  if (msg.type === "loading") termLine("Loading Python…", "muted");
+  if (msg.type === "out") appendOut(msg.text, msg.kind || "");
+  if (msg.type === "stdin") showProgramPrompt();
+  if (msg.type === "done") {
+    flushPending();
+    if (!runOutput.trim()) termLine("(no output)", "muted");
+    termLine("exited", "muted");
+    finishRun();
+  }
+  if (msg.type === "error") {
+    flushPending();
+    termLine(msg.text || "Python error", "err");
+    finishRun();
   }
 }
 
-function termCommand(cmd) {
-  const term = document.querySelector("#term");
-  if (!term) return;
-  const line = document.createElement("div");
-  line.className = "term-line cmd";
+function appendOut(text, kind) {
+  runOutput += text;
+  const parts = String(text).split("\n");
+  parts.forEach((part, index) => {
+    if (pendingOut && kind && pendingKind && kind !== pendingKind) flushPending();
+    pendingKind = kind || pendingKind;
+    pendingOut += part;
+    if (index < parts.length - 1) flushPending();
+  });
+}
+
+function flushPending() {
+  if (!pendingOut) {
+    pendingKind = "";
+    return;
+  }
+  termLine(pendingOut, pendingKind);
+  pendingOut = "";
+  pendingKind = "";
+}
+
+function showProgramPrompt() {
+  waitingInput = true;
+  inputMode = "program";
+  const span = document.querySelector("#term-prompt");
+  const input = document.querySelector("#term-input");
+  if (!span || !input) return;
+  if (pendingOut.length > 120) flushPending();
+  span.className = "live";
+  span.textContent = pendingOut;
+  pendingOut = "";
+  pendingKind = "";
+  input.placeholder = span.textContent ? "" : "program is waiting for input";
+  input.focus();
+}
+
+async function onTermSubmit(event) {
+  event.preventDefault();
+  const input = document.querySelector("#term-input");
+  const line = input.value;
+  input.value = "";
+  historyDraft = "";
+  if (waitingInput && activeRun?.id) {
+    waitingInput = false;
+    const prefix = document.querySelector("#term-prompt").textContent || "";
+    termLine(prefix + line);
+    document.querySelector("#term-prompt").textContent = "";
+    input.placeholder = "";
+    try {
+      await session.api("/api/runtime/stdin", { method: "POST", body: { run: activeRun.id, line } });
+    } catch (err) {
+      termLine(err.message, "err");
+    }
+    return;
+  }
+  const command = line.trim();
+  if (!command) return;
+  termHistory.push(command);
+  historyIndex = termHistory.length;
+  commitShellLine(command);
+  if (activeRun) {
+    termLine("A program is running. Press Ctrl+C or ■ to stop it.", "muted");
+    return;
+  }
+  await dispatch(parseCommand(command));
+}
+
+function onTermKey(event) {
+  if (event.key === "c" && event.ctrlKey) {
+    event.preventDefault();
+    if (activeRun) interrupt();
+    else event.currentTarget.value = "";
+    return;
+  }
+  if (event.key === "l" && event.ctrlKey) {
+    event.preventDefault();
+    clearTerm();
+    return;
+  }
+  if (event.key === "Tab" && inputMode === "shell") {
+    event.preventDefault();
+    completeTerm(event.currentTarget);
+    return;
+  }
+  if (inputMode !== "shell" || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+  if (!termHistory.length) return;
+  event.preventDefault();
+  if (event.key === "ArrowUp") {
+    if (historyIndex === termHistory.length) historyDraft = event.currentTarget.value;
+    historyIndex = Math.max(0, historyIndex - 1);
+    event.currentTarget.value = termHistory[historyIndex];
+  } else {
+    historyIndex = Math.min(termHistory.length, historyIndex + 1);
+    event.currentTarget.value = historyIndex === termHistory.length ? historyDraft : termHistory[historyIndex];
+  }
+}
+
+function parseCommand(line) {
+  const args = splitArgs(line);
+  const cmd = (args[0] || "").toLowerCase();
+  if (cmd === "help") return { kind: "help" };
+  if (cmd === "clear") return { kind: "clear" };
+  if (cmd === "pwd") return { kind: "pwd" };
+  if (cmd === "ls" || cmd === "dir") return { kind: "ls" };
+  if (cmd === "cat") return { kind: "cat", file: args.slice(1).join(" ") };
+  if (cmd === "python" || cmd === "python3") return { kind: "python", file: args[1] || "", argv: args.slice(2), cmd: line };
+  if (cmd === "node") return { kind: "node", file: args[1] || "", argv: args.slice(2), cmd: line };
+  if (cmd === "teachforth" && args[1] === "serve") return { kind: "web", entry: "index.html", cmd: line };
+  return { kind: "unknown", cmd: args[0] || line };
+}
+
+function splitArgs(line) {
+  const args = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match;
+  while ((match = re.exec(line))) args.push(match[1] ?? match[2] ?? match[3]);
+  return args;
+}
+
+async function dispatch(plan) {
+  const open = document.querySelector("#open-window");
+  if (open) open.hidden = plan.kind !== "web";
+  if (plan.kind === "help") {
+    termLine("python [file]      run a Python file, or open a prompt");
+    termLine("node <file>        run a JavaScript file");
+    termLine("ls                 list project files");
+    termLine("cat <file>         print a file");
+    termLine("teachforth serve   open the private preview");
+    termLine("clear              clear this screen");
+    termLine("Ctrl+C stops a program. A Python input() reads the bottom line.");
+    return;
+  }
+  if (plan.kind === "clear") return clearTerm();
+  if (plan.kind === "pwd") return termLine(`~/${editorState?.project?.title || "project"}`);
+  if (plan.kind === "ls") return listFiles();
+  if (plan.kind === "cat") return catFile(plan.file);
+  if (plan.kind === "unknown") {
+    termLine(`${plan.cmd}: command not found`, "err");
+    termLine("Type help for the commands this terminal can run.", "muted");
+    return;
+  }
+  if (plan.kind === "python") return runPython(plan.file, plan.argv || []);
+  if (plan.kind === "node") return runJs(plan.file, ["node", plan.file, ...(plan.argv || [])]);
+  if (plan.kind === "markdown") return previewMarkdown(plan.file);
+  if (plan.kind === "web") return serveWeb(plan);
+  if (plan.kind === "next") return explainNext();
+  termLine(plan.note || "Nothing to run.", "muted");
+}
+
+function listFiles() {
+  const files = visibleFiles();
+  if (!files.length) termLine("(no files)", "muted");
+  for (const file of files) termLine(file.path);
+}
+
+function catFile(name) {
+  const found = resolveFile(name);
+  if (!name || found.error) {
+    termLine(`cat: ${found.error || "pass a file"}`, "err");
+    return;
+  }
+  termLine(fileContent(found.path) || "(empty)", fileContent(found.path) ? "" : "muted");
+}
+
+function resolveFile(name) {
+  if (!name || !editorState) return { error: "no such file" };
+  const wanted = String(name).replace(/^\.\//, "");
+  const files = editorState.files.filter((file) => !hidden(file.path));
+  const exact = files.find((file) => file.path === wanted);
+  if (exact) return { path: exact.path };
+  const matches = files.filter((file) => file.path.endsWith(`/${wanted}`));
+  if (matches.length === 1) return { path: matches[0].path };
+  if (matches.length > 1) return { error: `${wanted} matches more than one file` };
+  return { error: `${wanted}: no such file` };
+}
+
+function completeTerm(input) {
+  const parts = splitArgs(input.value);
+  const prefix = parts.at(-1) || "";
+  const matches = visibleFiles()
+    .map((file) => file.path)
+    .filter((path) => path.startsWith(prefix) || path.split("/").pop().startsWith(prefix));
+  if (matches.length === 1) {
+    const next = input.value.replace(/\S*$/, matches[0]);
+    input.value = `${next} `;
+    return;
+  }
+  if (matches.length > 1) {
+    commitShellLine(input.value);
+    for (const path of matches.slice(0, 20)) termLine(path);
+  }
+}
+
+function commitShellLine(command) {
+  const log = document.querySelector("#term-log");
+  if (!log) return;
+  const row = document.createElement("div");
+  row.className = "term-line cmd";
   const prompt = document.createElement("span");
   prompt.className = "prompt";
   prompt.textContent = termPrompt();
   const code = document.createElement("span");
-  code.textContent = cmd;
-  line.append(prompt, code);
-  term.appendChild(line);
-  term.scrollTop = term.scrollHeight;
+  code.textContent = command;
+  row.append(prompt, code);
+  log.appendChild(row);
+  trimLog();
+  scrollTerm();
+}
+
+function termCommand(cmd) {
+  commitShellLine(cmd);
 }
 
 function termLine(text, kind = "") {
-  const term = document.querySelector("#term");
-  if (!term) return;
+  const log = document.querySelector("#term-log");
+  if (!log) return;
   const line = document.createElement("div");
   line.className = `term-line ${kind}`.trim();
   line.textContent = text;
-  term.appendChild(line);
-  term.scrollTop = term.scrollHeight;
+  log.appendChild(line);
+  trimLog();
+  scrollTerm();
+}
+
+function clearTerm() {
+  document.querySelector("#term-log")?.replaceChildren();
+}
+
+function trimLog() {
+  const log = document.querySelector("#term-log");
+  while (log && log.childElementCount > 400) log.firstChild.remove();
+}
+
+function scrollTerm() {
+  const log = document.querySelector("#term-log");
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
+function setShellPrompt() {
+  inputMode = "shell";
+  waitingInput = false;
+  const span = document.querySelector("#term-prompt");
+  const input = document.querySelector("#term-input");
+  if (!span) return;
+  span.className = "prompt";
+  span.textContent = termPrompt();
+  if (input) input.placeholder = "type a command";
+}
+
+function setRunning(on) {
+  for (const id of ["#play", "#run"]) {
+    const button = document.querySelector(id);
+    if (!button) continue;
+    button.textContent = on ? "■" : "▶";
+    button.title = on ? "Stop" : "Run the open file";
+  }
+}
+
+function interrupt(silent = false) {
+  const was = activeRun;
+  runGen += 1;
+  activeRun = null;
+  pendingOut = "";
+  pendingKind = "";
+  clearJsListener();
+  const iframe = document.querySelector("#runner");
+  if (iframe) iframe.srcdoc = "";
+  if (pyWorker) {
+    pyWorker.terminate();
+    pyWorker = null;
+  }
+  if (was?.id) session?.api?.(`/api/runtime/runs/${was.id}`, { method: "DELETE" }).catch(() => {});
+  setRunning(false);
+  setShellPrompt();
+  if (!silent && was) termLine("^C", "muted");
+}
+
+function clearJsListener() {
+  if (!jsListener) return;
+  window.removeEventListener("message", jsListener);
+  jsListener = null;
+}
+
+function finishRun() {
+  const run = activeRun;
+  const output = runOutput;
+  activeRun = null;
+  pendingOut = "";
+  pendingKind = "";
+  runOutput = "";
+  setRunning(false);
+  setShellPrompt();
+  if (run?.id) session?.api?.(`/api/runtime/runs/${run.id}`, { method: "DELETE" }).catch(() => {});
+  if (run && editorState) {
+    session.api(`/api/projects/${editorState.id}/run`, {
+      method: "POST",
+      body: { output: output.trim() || "(no output)" },
+    }).catch(() => {});
+  }
 }
 
 function termPrompt() {
   const name = String(session?.me?.name || "student").split(" ")[0].toLowerCase().replace(/[^a-z0-9_-]/g, "") || "student";
   return `${name}@teachforth:~$ `;
-}
-
-let pyodidePromise = null;
-function loadPyodide() {
-  pyodidePromise ??= import("https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.mjs").then((mod) =>
-    mod.loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/" }),
-  );
-  return pyodidePromise;
 }
 
 function fileContent(path) {

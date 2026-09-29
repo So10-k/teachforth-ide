@@ -10,6 +10,7 @@ import { zipStore } from "./zip.js";
 import { githubRoute, commitStudentProject, hydrateProject, visibleStudentProject } from "./github.js";
 import { normalizeTemplate, projectLanguage, starterEntries, isHiddenFile } from "./templates.js";
 import { publicSlug, publishedUrl, removeSite, siteFiles, writeSite } from "./publish.js";
+import { endRun, pushLine, startRun, waitLine } from "./runtime.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC = join(ROOT, "public");
@@ -370,6 +371,23 @@ async function route(req, res, url) {
   if (req.method === "POST" && path === "/api/login") return login(req, res);
   if (req.method === "POST" && path === "/api/logout") return logout(req, res);
   if (req.method === "GET" && path === "/api/me") return send(res, 200, { user: publicUser(user) });
+  if (path === "/api/runtime/runs" && req.method === "POST") {
+    requireUser(user);
+    return send(res, 201, { runId: startRun(user.id) });
+  }
+  const runtimeRun = path.match(/^\/api\/runtime\/runs\/([a-f0-9]+)$/);
+  if (runtimeRun && req.method === "DELETE") {
+    requireUser(user);
+    endRun(runtimeRun[1], user.id);
+    return send(res, 200, { ok: true });
+  }
+  if (path === "/api/runtime/stdin" && req.method === "POST") {
+    requireUser(user);
+    const body = await readJson(req);
+    if (!pushLine(String(body.run || ""), user.id, body.line)) fail(404, "That program is not waiting");
+    return send(res, 200, { ok: true });
+  }
+  if (path === "/api/runtime/stdin" && req.method === "GET") return runtimeStdin(res, user, url);
   if (req.method === "POST" && path === "/api/me/password") {
     requireUser(user);
     const body = await readJson(req);
@@ -1124,6 +1142,18 @@ function audit(user, action, projectId, detail) {
   db.prepare(
     "INSERT INTO audit (actor_id, action, project_id, detail, created_at) VALUES (?, ?, ?, ?, ?)",
   ).run(user?.id ?? null, action, projectId, detail || "", new Date().toISOString());
+}
+
+async function runtimeStdin(res, user, url) {
+  requireUser(user);
+  const result = await waitLine(url.searchParams.get("run") || "", user.id);
+  if (!result) fail(404, "That program is not waiting");
+  if (result.pending) {
+    res.writeHead(204, { "cache-control": "no-store" });
+    res.end();
+    return;
+  }
+  send(res, 200, result.eof ? { eof: true } : { line: result.line });
 }
 
 function requireUser(user) {

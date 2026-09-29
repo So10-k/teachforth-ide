@@ -247,6 +247,26 @@ try {
   assert(shell.status === 200 && shellText.includes('sandbox="allow-scripts"'), "preview shell stays sandboxed");
   assert(!shellText.includes("Hello from TeachForth"), "preview shell has no student code");
 
+  const anonRun = await send("/api/runtime/runs", { method: "POST", ok: false });
+  assert(anonRun.status === 401, "terminal input requires login");
+  const run = await send("/api/runtime/runs", { method: "POST", cookie: student.cookie });
+  assert(/^[a-f0-9]{32}$/.test(run.runId), "runtime id");
+  const waiting = fetch(`${base}/api/runtime/stdin?run=${run.runId}`, { headers: { cookie: student.cookie } });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await send("/api/runtime/stdin", { method: "POST", cookie: student.cookie, body: { run: run.runId, line: "sam" } });
+  const answered = await (await waiting).json();
+  assert(answered.line === "sam", "stdin line is relayed, not executed");
+  const stolen = await send("/api/runtime/stdin", {
+    method: "POST",
+    cookie: teacher.cookie,
+    body: { run: run.runId, line: "no" },
+    ok: false,
+  });
+  assert(stolen.status === 404, "another person cannot type into the program");
+  await send(`/api/runtime/runs/${run.runId}`, { method: "DELETE", cookie: student.cookie });
+  const ended = await send(`/api/runtime/stdin?run=${run.runId}`, { cookie: student.cookie });
+  assert(ended.eof === true, "stopped program gets end of input");
+
   console.log("selftest ok");
   console.log("outsider blocked", outsider.user.email);
 } catch (err) {

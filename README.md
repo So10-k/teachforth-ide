@@ -17,14 +17,17 @@ The editor is a dark, VS Code-style view: explorer, opened tabs only, hidden `.t
 
 ## The terminal, preview, and published pages
 
-The right pane is a terminal. **Play** prints a command and runs it:
+The right pane is a terminal. Type at the bottom, or press **Play** to run the open file. Ctrl+C stops a program. The server does not run the command. It only holds a line of text when Python calls `input()`, until this browser reads it.
 
-| Open file | Command | Where it runs |
-| --- | --- | --- |
-| `.py` | `python <file>` | Pyodide, in the browser |
-| `.js` with no `index.html` | `node <file>` | A sandboxed iframe. Output comes back through `postMessage`. |
-| HTML, or a project with `index.html` | `teachforth serve --port 3000` | No port is opened. Play prints a private preview link. |
-| `package.json` that mentions Next.js | `npm run dev` | Not started. Student servers are not run on the VM. |
+| Command | What it does |
+| --- | --- |
+| `python [file]` | Runs a `.py` file in Pyodide, or opens a prompt. `input()` reads the bottom line. |
+| `node <file>` | Runs a `.js` file in a sandboxed iframe. |
+| `ls`, `cat <file>` | Lists or prints project files. |
+| `teachforth serve` | Prints a private preview link. No port is opened. |
+| `help` | Lists these commands. |
+
+Play prints the same command it would run for the open file. A project with `index.html` uses `teachforth serve`. A `package.json` that mentions Next.js is not started. Student servers are not run on the VM.
 
 **Open** launches `/preview/<project id>/`. That page requires the same TeachForth login. The server checks that the person can open the project, then puts the HTML in an iframe with `sandbox="allow-scripts"` and no `allow-same-origin`. Do not serve student HTML as a normal same-origin page. A student script must not be able to call `/api/me`.
 
@@ -43,6 +46,8 @@ server/github.js       OAuth, repo list, commit-on-close
 server/publish.js      Static snapshot rules and the public slug
 server/templates.js    Starter files. `.teachforth` stays hidden.
 public/editor.js       IDE shell, terminal, play, publish button
+public/py-worker.js    Browser Python worker. Reads input() through the terminal.
+server/runtime.js      Holds a typed line until the browser worker reads it. Does not run it.
 public/preview.html    Signed-in preview window
 public/app.js          Portal pages
 deploy/                Azure VM, power panel, publish receiver, nginx snippet
@@ -73,7 +78,7 @@ Local demo only, created when `SEED_DEMO=1` and the database is empty:
 - Keep at least one admin. Do not allow self-delete.
 - Opening a project writes an audit row. Do not add a way to watch a student without that log.
 - Students never see session reports, including in zip exports.
-- Do not execute student code on the server. Do not bind a port for a student, and do not start Next.js or Node for them.
+- Do not execute student code on the server. The stdin relay may store a line of text only. Do not bind a port for a student, and do not start Next.js or Node for them.
 - Do not loosen the preview iframe sandbox.
 - Do not reset the editor from a poll or save while the person is typing.
 - CodeMirror close-brackets, close-tags, and completion stay vendored. Do not add an npm package for them.
