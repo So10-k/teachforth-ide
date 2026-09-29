@@ -73,10 +73,11 @@ self.onmessage = async (event) => {
     });
     await pyodide.runPythonAsync(`import builtins, sys
 sys.argv = ${JSON.stringify(msg.argv || ["python"])}
-_print = builtins.print
+if not hasattr(builtins, "_tf_orig_print"):
+    builtins._tf_orig_print = builtins.print
 def print(*args, **kwargs):
     kwargs.setdefault("flush", True)
-    _print(*args, **kwargs)
+    builtins._tf_orig_print(*args, **kwargs)
 builtins.print = print
 `);
     await pyodide.runPythonAsync(msg.code || "");
