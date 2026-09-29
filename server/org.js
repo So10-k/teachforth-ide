@@ -1,6 +1,7 @@
 import { lineDiff } from "./diff.js";
 import { visibleStudentProject, createOwnedRepo } from "./github.js";
 import { focus } from "./live.js";
+import { curriculumRoute, insertSkills, parseSkills, skillsForReports } from "./curriculum-api.js";
 
 const ROLES = ["admin", "chapter_lead", "teacher", "student"];
 
@@ -92,6 +93,9 @@ export function recordRevision(db, projectId, path, content, authorId) {
 export async function orgRoute(ctx, path) {
   const { db, req, res, user, send, fail, readJson, audit, requireUser } = ctx;
   requireUser(user);
+  ctx.canViewProfile = canViewProfile;
+  ctx.canAccessProject = canAccessProject;
+  if (await curriculumRoute(ctx, path) !== false) return;
   if (path === "/api/chapters" && req.method === "GET") return send(res, 200, { chapters: listChapters(db, user) });
   if (path === "/api/chapters" && req.method === "POST") return createChapter(ctx);
   const staff = path.match(/^\/api\/chapters\/(\d+)\/staff$/);
@@ -438,20 +442,23 @@ function folderOf(db, user, studentId, projectView) {
 }
 
 function reportsFor(db, studentId) {
-  return db.prepare(
+  const rows = db.prepare(
     `SELECT r.id, r.body, r.diff, r.created_at, r.block_id, u.name AS author_name, b.name AS block_name
      FROM reports r
      JOIN users u ON u.id = r.author_id
      LEFT JOIN blocks b ON b.id = r.block_id
      WHERE r.student_id = ?
      ORDER BY r.id DESC`,
-  ).all(studentId).map((row) => ({
+  ).all(studentId);
+  const skills = skillsForReports(db, rows.map((row) => row.id));
+  return rows.map((row) => ({
     id: row.id,
     body: row.body,
     diff: row.diff,
     createdAt: row.created_at,
     authorName: row.author_name,
     blockName: row.block_name || "",
+    skills: skills.get(row.id) || [],
   }));
 }
 
@@ -511,6 +518,7 @@ async function createReport(ctx, studentId) {
   if (!text) fail(400, "Write what you worked on");
   const built = buildReport(db, studentId);
   if (body.preview) return send(res, 200, { diff: built.diff, saves: built.saves });
+  const skills = parseSkills(db, studentId, body.skills, fail);
   const block = db.prepare(
     `SELECT b.id FROM blocks b
      JOIN pairs p ON p.block_id = b.id
@@ -522,6 +530,7 @@ async function createReport(ctx, studentId) {
       "INSERT INTO reports (student_id, author_id, block_id, body, diff, snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     ).run(studentId, user.id, block?.id || null, text, built.diff, built.snapshot, new Date().toISOString()).lastInsertRowid,
   );
+  insertSkills(db, id, studentId, skills);
   audit(user, "session_report", null, String(studentId));
   send(res, 201, { report: reportsFor(db, studentId).find((row) => row.id === id) });
 }

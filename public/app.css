@@ -235,7 +235,22 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
 .avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { background: #f3f5fb; border-radius: 999px; padding: 4px 10px; font-size: 13px; }
-.chip.live { background: #e5f7ef; color: #137a52; }
+.chip.live, .chip.mastered { background: #e5f7ef; color: #137a52; }
+.chip.practiced { background: #fff4df; color: #8a5a00; }
+.chip.linked { background: #e8f1fb; color: #0e639c; }
+.chip.none { background: #f3f5fb; color: #5c678a; }
+.pathway-search { width: min(320px, 100%); margin: 8px 0; }
+.mod-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.unit-block { margin: 6px 0; }
+.check { display: inline-flex; align-items: center; gap: 6px; }
+.teach-guide { position: fixed; top: 48px; right: 16px; z-index: 50; width: 380px; height: 540px; min-width: 280px; min-height: 220px; resize: both; overflow: auto; background: #252526; color: #d4d4d4; border: 1px solid #454545; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.45); display: flex; flex-direction: column; }
+.teach-guide header { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #3c3c3c; cursor: move; position: sticky; top: 0; }
+.teach-guide header button, .teach-guide .guide-tools button { height: 26px; border: 0; border-radius: 4px; background: #0e639c; color: white; padding: 0 8px; }
+.teach-guide .guide-body { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.teach-guide select, .teach-guide input { background: #1e1e1e; color: #d4d4d4; border: 1px solid #454545; border-radius: 4px; padding: 4px 6px; }
+.teach-guide pre { margin: 0; white-space: pre-wrap; background: #1e1e1e; border: 1px solid #454545; padding: 8px; font-family: var(--mono); font-size: 12px; }
+.teach-guide .guide-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.teach-guide p { margin: 0; }
 .profile { background: white; border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
 .cover { height: 88px; background: linear-gradient(120deg, #3b6ef6, #7a4de0); }
 .profile-row { display: flex; gap: 16px; align-items: flex-start; padding: 0 18px 18px; }

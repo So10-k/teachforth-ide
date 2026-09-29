@@ -495,7 +495,7 @@ function bindChapters(main) {
 }
 
 function templateSelect(id) {
-  return `<select id="${id}"><option value="web">Web page</option><option value="python">Python</option><option value="javascript">JavaScript</option><option value="markdown">Markdown</option><option value="empty">Empty</option></select>`;
+  return `<select id="${id}"><option value="web">Web page</option><option value="python">Python</option><option value="javascript">JavaScript</option><option value="java">Java</option><option value="c">C</option><option value="cpp">C++</option><option value="markdown">Markdown</option><option value="empty">Empty</option></select>`;
 }
 
 function roleName(role) {
@@ -526,6 +526,7 @@ async function personPage(main, id, me, api, esc, ago) {
   const person = profile.person;
   const folder = person.role === "student" ? await api(`/api/folders/${id}`).catch(() => null) : null;
   const staff = me.role !== "student";
+  const pathway = staff && folder ? await api(`/api/folders/${id}/pathway`).catch(() => null) : null;
   const head = `<section class="profile"><div class="cover"></div><div class="profile-row">
       <span class="avatar lg">${person.githubAvatar ? `<img src="${esc(person.githubAvatar)}" alt="">` : esc((person.name || "?").slice(0, 1))}</span>
       <div><h1>${esc(person.name)}</h1><p class="muted">${esc(person.email)}</p>
@@ -545,17 +546,29 @@ async function personPage(main, id, me, api, esc, ago) {
       <div class="cards">${profile.sandboxes.map((project) => `<article class="card"><h3>${esc(project.title)}</h3><p class="muted">${esc(project.language)}</p>${profile.canOpenSandbox ? `<button class="btn" data-id="${project.id}">Open</button>` : `<span class="muted">Only an admin or the owner can open this.</span>`}</article>`).join("") || `<p class="muted">No sandbox yet.</p>`}</div></section>` : "";
   const libraryBlock = folder ? `<section>${library(folder, esc, folder.canOpen)}</section>` : "";
   const reports = folder && staff ? `<aside><h2 class="unit">Session reports</h2>
-      ${folder.canOpen ? `<section class="panel"><p class="muted">The student never sees this. The diff is their code since the previous report.</p><textarea id="report-body" placeholder="What did you work on?"></textarea><pre class="diff">${esc(folder.preview || "")}</pre><button class="btn" id="save-report">Save report</button></section>` : `<p class="muted">A new report can be written when this student is in a live session with you.</p>`}
-      <div class="timeline">${(folder.reports || []).map((report) => `<article class="panel"><strong>${esc(report.authorName)}</strong> <span class="muted">${esc(String(report.createdAt).replace("T", " ").slice(0, 16))}</span><p>${esc(report.body)}</p><pre class="diff">${esc(report.diff)}</pre></article>`).join("") || `<p class="muted">No reports yet.</p>`}</div>
+      ${folder.canOpen ? `<section class="panel"><p class="muted">The student never sees this. The diff is their code since the previous report. A skill mark links the project on the pathway.</p><textarea id="report-body" placeholder="What did you work on?"></textarea>
+        <div id="skill-rows"></div><button class="btn-ghost" id="add-skill" type="button">Add skill</button>
+        <pre class="diff">${esc(folder.preview || "")}</pre><button class="btn" id="save-report">Save report</button><p class="error" id="report-err"></p></section>` : `<p class="muted">A new report can be written when this student is in a live session with you.</p>`}
+      <div class="timeline">${(folder.reports || []).map((report) => `<article class="panel"><strong>${esc(report.authorName)}</strong> <span class="muted">${esc(String(report.createdAt).replace("T", " ").slice(0, 16))}</span><p>${esc(report.body)}</p><div class="chips">${(report.skills || []).map((skill) => `<span class="chip ${esc(skill.level)}">${esc(skill.moduleTitle)} · ${esc(skill.course)} · ${esc(skill.level)}${skill.projectTitle ? ` · ${skill.projectTitle}` : ""}</span>`).join("")}</div><pre class="diff">${esc(report.diff)}</pre></article>`).join("") || `<p class="muted">No reports yet.</p>`}</div>
       ${folder.githubLogin && folder.canOpen && me.role !== "student" ? `<section class="panel"><h2>Start a repository</h2><p class="muted">This uses the student's GitHub account. Only the student can commit.</p><div class="row"><input id="repo-name" placeholder="Project name">${templateSelect("repo-lang")}<button class="btn" id="new-student-repo">Create</button></div><p class="error" id="repo-err"></p></section>` : ""}
     </aside>` : `<aside class="panel"><h2>Access</h2><p>${esc(profile.access)}</p>${person.role === "student" && me.id === person.id ? `<a class="btn" href="#/github">GitHub</a>` : ""}</aside>`;
-  main.innerHTML = page("", "", `${head}<div class="split">${libraryBlock}${sandbox}${manage ? "" : ""}${reports}</div>${manage}`);
+  main.innerHTML = page("", "", `${head}${pathway ? pathwaySection(pathway, esc) : ""}<div class="split">${libraryBlock}${sandbox}${manage ? "" : ""}${reports}</div>${manage}`);
   main.querySelector(".page-head").hidden = true;
   bindProfiles(main);
+  bindPathway(main, id, api, () => personPage(main, id, me, api, esc, ago));
+  bindSkillRows(main, pathway, folder, esc);
   const save = main.querySelector("#save-report");
   if (save) save.onclick = async () => {
-    await api(`/api/folders/${id}/reports`, { method: "POST", body: { body: main.querySelector("#report-body").value } });
-    personPage(main, id, me, api, esc, ago);
+    const err = main.querySelector("#report-err");
+    try {
+      await api(`/api/folders/${id}/reports`, {
+        method: "POST",
+        body: { body: main.querySelector("#report-body").value, skills: skillPayload(main) },
+      });
+      personPage(main, id, me, api, esc, ago);
+    } catch (error) {
+      if (err) err.textContent = error.message;
+    }
   };
   const box = main.querySelector("#new-box");
   if (box) box.onclick = async () => {
@@ -599,6 +612,79 @@ async function personPage(main, id, me, api, esc, ago) {
       main.querySelector("#manage-err").textContent = err.message;
     }
   };
+}
+
+function pathwaySection(pathway, esc) {
+  const courses = new Set(pathway.courses || []);
+  const checks = ["python", "java", "c"].map((course) => `<label class="check"><input type="checkbox" data-course value="${course}" ${courses.has(course) ? "checked" : ""}> ${course === "python" ? "Python" : course === "java" ? "Java" : "C"}</label>`).join("");
+  const boards = (pathway.pathways || []).map((board) => `<section class="panel pathway"><h2>${esc(board.name)}</h2>
+      <input class="pathway-search" placeholder="Search modules" aria-label="Search ${esc(board.name)} modules">
+      ${(board.units || []).map((unit) => `<details class="unit-block"><summary>${esc(unit.title)}</summary>
+        ${(unit.modules || []).map((mod) => `<div class="mod-row" data-mod data-title="${esc(mod.title.toLowerCase())}"><span>${esc(mod.title)}</span>${mod.focus ? `<span class="chip">${esc(mod.focus)}</span>` : ""}<span class="chip ${esc(mod.status)}">${esc(mod.status)}</span>${(mod.projects || []).map((project) => project.url ? `<a href="${esc(project.url)}">${esc(project.title)}</a>` : `<span class="muted">${esc(project.title)}</span>`).join("")}</div>`).join("")}
+      </details>`).join("")}
+    </section>`).join("");
+  return `<section class="panel"><h2>Courses</h2><p class="muted">Teachers assign Python, Java, and C. Students never see this pathway or the skill marks.</p><div class="row">${checks}<button class="btn" id="save-courses" type="button">Save courses</button></div><p class="error" id="course-err"></p></section>${boards || `<section class="panel"><p class="muted">No course assigned yet.</p></section>`}`;
+}
+
+function bindPathway(main, id, api, again) {
+  const save = main.querySelector("#save-courses");
+  if (save) save.onclick = async () => {
+    const err = main.querySelector("#course-err");
+    try {
+      await api(`/api/folders/${id}/courses`, {
+        method: "POST",
+        body: { courses: [...main.querySelectorAll("[data-course]:checked")].map((box) => box.value) },
+      });
+      again();
+    } catch (error) {
+      if (err) err.textContent = error.message;
+    }
+  };
+  for (const input of main.querySelectorAll(".pathway-search")) {
+    input.oninput = () => {
+      const q = input.value.trim().toLowerCase();
+      const panel = input.closest(".pathway");
+      for (const row of panel.querySelectorAll("[data-mod]")) row.hidden = Boolean(q) && !row.dataset.title.includes(q);
+      for (const unit of panel.querySelectorAll(".unit-block")) {
+        const visible = [...unit.querySelectorAll("[data-mod]")].some((row) => !row.hidden);
+        unit.hidden = !visible;
+        if (q && visible) unit.open = true;
+      }
+    };
+  }
+}
+
+function bindSkillRows(main, pathway, folder, esc) {
+  const add = main.querySelector("#add-skill");
+  if (!add || !pathway) return;
+  const modules = (pathway.pathways || []).flatMap((board) => (board.units || []).flatMap((unit) => unit.modules || []));
+  const seen = new Set();
+  const options = modules.filter((mod) => {
+    if (seen.has(mod.id)) return false;
+    seen.add(mod.id);
+    return true;
+  });
+  add.onclick = () => {
+    const row = document.createElement("div");
+    row.className = "row skill-row";
+    const courses = pathway.courses || [];
+    row.innerHTML = `<select class="skill-module">${options.map((mod) => `<option value="${esc(mod.id)}">${esc(mod.title)}</option>`).join("")}</select>
+      <select class="skill-course">${courses.map((course) => `<option value="${esc(course)}">${esc(course)}</option>`).join("")}</select>
+      <select class="skill-level"><option value="practiced">Practiced</option><option value="mastered">Mastered</option></select>
+      <select class="skill-project"><option value="">No project</option>${(folder?.projects || []).map((project) => `<option value="${project.id}">${esc(project.title)}</option>`).join("")}</select>
+      <button class="btn-ghost" type="button">Remove</button>`;
+    row.querySelector("button").onclick = () => row.remove();
+    main.querySelector("#skill-rows").append(row);
+  };
+}
+
+function skillPayload(main) {
+  return [...main.querySelectorAll(".skill-row")].map((row) => ({
+    moduleId: row.querySelector(".skill-module").value,
+    course: row.querySelector(".skill-course").value,
+    level: row.querySelector(".skill-level").value,
+    projectId: row.querySelector(".skill-project").value || null,
+  })).filter((skill) => skill.moduleId && skill.course);
 }
 
 function bindProfiles(main) {

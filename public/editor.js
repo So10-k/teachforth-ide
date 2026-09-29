@@ -65,6 +65,7 @@ export async function openEditor({ app, id, me, api, esc }) {
       <span id="viewers"></span>
       <button id="run" title="Run the open file">▶</button>
       <button id="board-btn">Board</button>
+      ${teacher && opened.project.ownerRole === "student" ? `<button id="guide-btn">Guide</button>` : ""}
       ${teacher ? `<button id="report-btn">Report</button>` : ""}
       <button id="export">Export</button>
       <button id="back">Back</button>
@@ -119,6 +120,8 @@ export async function openEditor({ app, id, me, api, esc }) {
     if (name) createPath(`${name.replace(/\/+$/, "")}/untitled.txt`);
   };
   if (teacher) document.querySelector("#report-btn").onclick = () => { location.hash = `#/person/${opened.project.ownerId}`; };
+  const guideBtn = document.querySelector("#guide-btn");
+  if (guideBtn) guideBtn.onclick = () => toggleGuide();
   connectLive();
   renderExplorer();
   mountEditor();
@@ -129,6 +132,7 @@ export async function openEditor({ app, id, me, api, esc }) {
 }
 
 async function leaveProject() {
+  document.querySelector("#teach-guide")?.remove();
   interrupt(true);
   const back = editorState?.project?.kind === "sandbox" ? "#/sandbox" : "#/";
   if (session?.me?.role === "student" && editorState?.project?.kind === "github") {
@@ -435,6 +439,9 @@ function modeOf(path) {
   if (path?.endsWith(".html") || path?.endsWith(".htm")) return "htmlmixed";
   if (path?.endsWith(".md")) return "markdown";
   if (path?.endsWith(".json")) return { name: "javascript", json: true };
+  if (path?.endsWith(".java")) return "text/x-java";
+  if (path?.endsWith(".c") || path?.endsWith(".h")) return "text/x-csrc";
+  if (path?.endsWith(".cpp") || path?.endsWith(".cc") || path?.endsWith(".cxx") || path?.endsWith(".hpp")) return "text/x-c++src";
   return "text/plain";
 }
 
@@ -442,6 +449,9 @@ function languageLabel(path) {
   if (!path) return "";
   if (path.endsWith(".py")) return "Python";
   if (path.endsWith(".js")) return "JavaScript";
+  if (path.endsWith(".java")) return "Java";
+  if (path.endsWith(".c") || path.endsWith(".h")) return "C";
+  if (path.endsWith(".cpp") || path.endsWith(".cc") || path.endsWith(".cxx") || path.endsWith(".hpp")) return "C++";
   if (path.endsWith(".html")) return "HTML";
   if (path.endsWith(".css")) return "CSS";
   if (path.endsWith(".md")) return "Markdown";
@@ -548,6 +558,8 @@ let pendingKind = "";
 let waitingInput = false;
 let runOutput = "";
 let pyWorker = null;
+let ccWorker = null;
+let javaWorker = null;
 let jsListener = null;
 let termHistory = [];
 let historyIndex = 0;
@@ -598,6 +610,9 @@ async function play() {
 function planRun(path) {
   const pkg = fileContent("package.json");
   if (path.endsWith(".py")) return { kind: "python", cmd: `python ${path}`, file: path };
+  if (path.endsWith(".c")) return { kind: "c", cmd: `gcc ${path} && ./a.out`, file: path };
+  if (path.endsWith(".cpp") || path.endsWith(".cc") || path.endsWith(".cxx")) return { kind: "c", cmd: `g++ ${path} && ./a.out`, file: path };
+  if (path.endsWith(".java")) return { kind: "java", cmd: `java ${path}`, file: path };
   if (!path.endsWith(".html") && editorState.project.language === "python" && !fileContent("index.html")) {
     const py = visibleFiles().find((file) => file.path.endsWith(".py"));
     if (py) return { kind: "python", cmd: `python ${py.path}`, file: py.path };
@@ -739,6 +754,59 @@ async function runPython(path, argv = []) {
   worker.postMessage({ type: "run", runId: started.runId, code, argv: args, gen });
 }
 
+async function runNative(kind, path) {
+  const found = resolveFile(path);
+  const ok = kind === "java" ? found.path?.endsWith(".java") : /\.(c|cpp|cc|cxx)$/.test(found.path || "");
+  if (!path || found.error || !ok) {
+    const tool = kind === "java" ? "java" : "gcc";
+    termLine(found.error ? `${tool}: ${found.error}` : `${tool}: pass a source file`, "err");
+    return;
+  }
+  let started;
+  try {
+    started = await session.api("/api/runtime/runs", { method: "POST", body: {} });
+  } catch (err) {
+    termLine(err.message || "Could not start", "err");
+    return;
+  }
+  if (!editorState) return;
+  const gen = runGen;
+  activeRun = { id: started.runId, gen, kind };
+  pendingOut = "";
+  pendingKind = "";
+  runOutput = "";
+  setRunning(true);
+  termLine("Running in your browser. Nothing is compiled on the server.", "muted");
+  const worker = kind === "java" ? ensureJavaWorker() : ensureCcWorker();
+  worker.postMessage({ type: "run", runId: started.runId, code: fileContent(found.path), gen });
+}
+
+function ensureCcWorker() {
+  if (ccWorker) return ccWorker;
+  ccWorker = new Worker("/cc-worker.js", { type: "module" });
+  ccWorker.onmessage = onWorkerMessage;
+  ccWorker.onerror = (event) => {
+    termLine(event.message || "C/C++ failed to start", "err");
+    ccWorker?.terminate();
+    ccWorker = null;
+    finishRun();
+  };
+  return ccWorker;
+}
+
+function ensureJavaWorker() {
+  if (javaWorker) return javaWorker;
+  javaWorker = new Worker("/java-worker.js", { type: "module" });
+  javaWorker.onmessage = onWorkerMessage;
+  javaWorker.onerror = (event) => {
+    termLine(event.message || "Java failed to start", "err");
+    javaWorker?.terminate();
+    javaWorker = null;
+    finishRun();
+  };
+  return javaWorker;
+}
+
 function ensureWorker() {
   if (pyWorker) return pyWorker;
   pyWorker = new Worker("/py-worker.js", { type: "module" });
@@ -754,7 +822,7 @@ function ensureWorker() {
 
 function onWorkerMessage(event) {
   const msg = event.data || {};
-  if (!activeRun || activeRun.gen !== runGen || activeRun.kind !== "python") return;
+  if (!activeRun || activeRun.gen !== runGen || !["python", "c", "java"].includes(activeRun.kind)) return;
   if (msg.type === "loading") termLine("Loading Python…", "muted");
   if (msg.type === "out") appendOut(msg.text, msg.kind || "");
   if (msg.type === "stdin") showProgramPrompt();
@@ -766,7 +834,10 @@ function onWorkerMessage(event) {
   }
   if (msg.type === "error") {
     flushPending();
-    termLine(msg.text || "Python error", "err");
+    termLine(msg.text || "Program error", "err");
+    if (activeRun.kind === "c" || activeRun.kind === "java") {
+      termLine("This runs in your browser, not on the server. It covers teaching programs, not every library.", "muted");
+    }
     finishRun();
   }
 }
@@ -878,6 +949,9 @@ function parseCommand(line) {
   if (cmd === "cat") return { kind: "cat", file: args.slice(1).join(" ") };
   if (cmd === "python" || cmd === "python3") return { kind: "python", file: args[1] || "", argv: args.slice(2), cmd: line };
   if (cmd === "node") return { kind: "node", file: args[1] || "", argv: args.slice(2), cmd: line };
+  if (cmd === "gcc" || cmd === "clang") return { kind: "c", file: args.find((arg) => arg.endsWith(".c")) || "", cmd: line };
+  if (cmd === "g++" || cmd === "clang++") return { kind: "c", file: args.find((arg) => /\.(cpp|cc|cxx)$/.test(arg)) || "", cmd: line };
+  if (cmd === "java" || cmd === "javac") return { kind: "java", file: args.find((arg) => arg.endsWith(".java")) || "", cmd: line };
   if (cmd === "teachforth" && args[1] === "serve") return { kind: "web", entry: "index.html", cmd: line };
   return { kind: "unknown", cmd: args[0] || line };
 }
@@ -896,6 +970,9 @@ async function dispatch(plan) {
   if (plan.kind === "help") {
     termLine("python [file]      run a Python file, or open a prompt");
     termLine("node <file>        run a JavaScript file");
+    termLine("gcc <file>         run a C file in the browser");
+    termLine("g++ <file>         run a C++ file in the browser");
+    termLine("java <file>        run a Java file in the browser");
     termLine("ls                 list project files");
     termLine("cat <file>         print a file");
     termLine("teachforth serve   open the private preview");
@@ -913,6 +990,8 @@ async function dispatch(plan) {
     return;
   }
   if (plan.kind === "python") return runPython(plan.file, plan.argv || []);
+  if (plan.kind === "c") return runNative("c", plan.file);
+  if (plan.kind === "java") return runNative("java", plan.file);
   if (plan.kind === "node") return runJs(plan.file, ["node", plan.file, ...(plan.argv || [])]);
   if (plan.kind === "markdown") return previewMarkdown(plan.file);
   if (plan.kind === "web") return serveWeb(plan);
@@ -1038,10 +1117,8 @@ function interrupt(silent = false) {
   clearJsListener();
   const iframe = document.querySelector("#runner");
   if (iframe) iframe.srcdoc = "";
-  if (pyWorker) {
-    pyWorker.terminate();
-    pyWorker = null;
-  }
+  for (const worker of [pyWorker, ccWorker, javaWorker]) worker?.terminate();
+  pyWorker = ccWorker = javaWorker = null;
   if (was?.id) session?.api?.(`/api/runtime/runs/${was.id}`, { method: "DELETE" }).catch(() => {});
   setRunning(false);
   setShellPrompt();
@@ -1207,6 +1284,157 @@ function applyRemoteFile(file) {
   if (file.path === editorState.active && !editorState.dirty) writeEditor(file.content, true);
   treeSig = "";
   renderExplorer();
+}
+
+async function toggleGuide() {
+  const existing = document.querySelector("#teach-guide");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  if (!editorState || !session) return;
+  const projectId = editorState.id;
+  const panel = document.createElement("section");
+  panel.id = "teach-guide";
+  panel.className = "teach-guide";
+  panel.innerHTML = `<header><strong>Teaching guide</strong><span class="spacer"></span><button type="button" id="guide-close">Hide</button></header><div class="guide-body"><p>Loading…</p></div>`;
+  document.querySelector(".ide")?.append(panel);
+  bindGuideDrag(panel);
+  panel.querySelector("#guide-close").onclick = () => panel.remove();
+  try {
+    const data = await session.api(`/api/projects/${projectId}/guide`);
+    if (!panel.isConnected || editorState?.id !== projectId) return;
+    renderGuide(panel, data, projectId);
+  } catch (err) {
+    if (panel.isConnected) panel.querySelector(".guide-body").textContent = err.message;
+  }
+}
+
+function bindGuideDrag(panel) {
+  const header = panel.querySelector("header");
+  let drag = null;
+  header.onpointerdown = (event) => {
+    if (event.target.closest("button")) return;
+    const rect = panel.getBoundingClientRect();
+    drag = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    header.setPointerCapture(event.pointerId);
+  };
+  header.onpointermove = (event) => {
+    if (!drag) return;
+    panel.style.left = `${Math.max(0, event.clientX - drag.x)}px`;
+    panel.style.top = `${Math.max(0, event.clientY - drag.y)}px`;
+    panel.style.right = "auto";
+  };
+  header.onpointerup = () => { drag = null; };
+}
+
+function renderGuide(panel, data, projectId) {
+  const modules = (data.units || []).flatMap((unit) => (unit.modules || []).map((mod) => ({ ...mod, unit: unit.title })));
+  const body = panel.querySelector(".guide-body");
+  body.innerHTML = `<input id="guide-search" placeholder="Search modules" aria-label="Search modules">
+    <select id="guide-module"></select>
+    <div class="guide-tools">
+      <button type="button" data-lang="python">Python</button>
+      <button type="button" data-lang="java">Java</button>
+      <button type="button" data-lang="c">C</button>
+      <button type="button" id="guide-copy">Copy</button>
+      <button type="button" id="guide-hide">Hide solution</button>
+    </div>
+    <label>Course <select id="guide-course">${(data.enrollments || []).map((course) => `<option value="${esc(course)}">${esc(course)}</option>`).join("") || `<option value="">No course assigned</option>`}</select></label>
+    <button type="button" id="guide-link">Link to this project</button>
+    <p id="guide-link-state"></p>
+    <div id="guide-notes"></div>
+    <pre id="guide-code"></pre>
+    <p class="error" id="guide-err"></p>`;
+  const select = body.querySelector("#guide-module");
+  const search = body.querySelector("#guide-search");
+  const course = body.querySelector("#guide-course");
+  if (data.suggested && [...course.options].some((option) => option.value === data.suggested)) course.value = data.suggested;
+  let lang = data.suggested || "python";
+  let detail = null;
+  let hidden = false;
+  const fill = () => {
+    const q = search.value.trim().toLowerCase();
+    const current = select.value;
+    select.innerHTML = modules.filter((mod) => !q || mod.title.toLowerCase().includes(q) || mod.unit.toLowerCase().includes(q))
+      .map((mod) => `<option value="${esc(mod.id)}">${esc(mod.unit)} · ${esc(mod.title)}</option>`).join("");
+    if ([...select.options].some((option) => option.value === current)) select.value = current;
+  };
+  const paint = () => {
+    const notes = body.querySelector("#guide-notes");
+    const code = body.querySelector("#guide-code");
+    const linked = (data.linked || []).some((row) => row.moduleId === select.value && row.course === course.value);
+    body.querySelector("#guide-link").textContent = linked ? "Unlink" : "Link to this project";
+    body.querySelector("#guide-link-state").textContent = (data.linked || []).filter((row) => row.moduleId === select.value).map((row) => `${row.title} · ${row.course}`).join(", ");
+    if (!detail) {
+      notes.textContent = "";
+      code.textContent = "";
+      return;
+    }
+    const teach = detail.teach || {};
+    notes.innerHTML = `<p><strong>${esc(detail.title)}</strong></p><p>${esc(teach.goal || "")}</p><p>${esc(teach.say || "")}</p><ol>${(teach.steps || []).map((step) => `<li>${esc(step)}</li>`).join("")}</ol><p>${esc(teach.watch || "")}</p><p>${esc(teach.done || "")}</p>`;
+    code.hidden = hidden;
+    code.textContent = hidden ? "" : (detail.code?.[lang] || "");
+  };
+  const load = async () => {
+    body.querySelector("#guide-err").textContent = "";
+    try {
+      detail = await session.api(`/api/curriculum/${select.value}`);
+      if (!panel.isConnected) return;
+      paint();
+    } catch (err) {
+      body.querySelector("#guide-err").textContent = err.message;
+    }
+  };
+  fill();
+  search.oninput = () => {
+    const before = select.value;
+    fill();
+    if (select.value !== before) load();
+  };
+  select.onchange = () => load();
+  course.onchange = () => paint();
+  for (const button of body.querySelectorAll("[data-lang]")) {
+    button.onclick = () => {
+      lang = button.dataset.lang;
+      paint();
+    };
+  }
+  body.querySelector("#guide-hide").onclick = () => {
+    hidden = !hidden;
+    body.querySelector("#guide-hide").textContent = hidden ? "Show solution" : "Hide solution";
+    paint();
+  };
+  body.querySelector("#guide-copy").onclick = async () => {
+    const text = detail?.code?.[lang] || "";
+    try {
+      await navigator.clipboard.writeText(text);
+      body.querySelector("#guide-err").textContent = "Copied.";
+    } catch {
+      body.querySelector("#guide-err").textContent = "Copy failed.";
+    }
+  };
+  body.querySelector("#guide-link").onclick = async () => {
+    const err = body.querySelector("#guide-err");
+    const moduleId = select.value;
+    const chosen = course.value;
+    if (!chosen) {
+      err.textContent = "Assign a course on the student profile first.";
+      return;
+    }
+    const linked = (data.linked || []).some((row) => row.moduleId === moduleId && row.course === chosen);
+    try {
+      const result = linked
+        ? await session.api(`/api/projects/${projectId}/modules/${moduleId}?course=${encodeURIComponent(chosen)}`, { method: "DELETE" })
+        : await session.api(`/api/projects/${projectId}/modules`, { method: "POST", body: { moduleId, course: chosen } });
+      data.linked = result.linked || [];
+      err.textContent = "";
+      paint();
+    } catch (error) {
+      err.textContent = error.message;
+    }
+  };
+  if (select.value) load();
 }
 
 function esc(value) {

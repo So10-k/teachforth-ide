@@ -1,4 +1,5 @@
 import { displayTitle, isTeachforthRepo, parseTeachforthCode, repoNameFor, teachforthMarker, visibleStudentProject } from "./github.js";
+import { runJava } from "../public/java-lang.js";
 import { publicSlug, siteFiles } from "./publish.js";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -134,6 +135,60 @@ try {
     ok: false,
   });
   assert(deniedReport.status === 403, "student cannot write a report");
+  const studentPathway = await send(`/api/folders/${students.students[0].id}/pathway`, { cookie: student.cookie, ok: false });
+  assert(studentPathway.status === 403, "student pathway is hidden");
+  const studentCatalog = await send("/api/curriculum", { cookie: student.cookie, ok: false });
+  assert(studentCatalog.status === 403, "student curriculum is hidden");
+  const studentGuide = await send(`/api/projects/${opened.project.id}/guide`, { cookie: student.cookie, ok: false });
+  assert(studentGuide.status === 403, "student cannot open the guide");
+  const curriculum = await send("/api/curriculum", { cookie: teacher.cookie });
+  const moduleCount = curriculum.units.reduce((sum, unit) => sum + unit.modules.length, 0);
+  assert(moduleCount === 87, "curriculum has 87 modules");
+  assert(curriculum.units.some((unit) => unit.modules.some((mod) => mod.title === "Socket 101 (C)")), "c socket module title");
+  const assigned = await send(`/api/folders/${students.students[0].id}/courses`, {
+    method: "POST",
+    cookie: teacher.cookie,
+    body: { courses: ["python", "java"] },
+  });
+  assert(assigned.courses.includes("python") && assigned.courses.includes("java"), "courses assigned");
+  const deniedCourses = await send(`/api/folders/${students.students[0].id}/courses`, {
+    method: "POST",
+    cookie: student.cookie,
+    body: { courses: ["c"] },
+    ok: false,
+  });
+  assert(deniedCourses.status === 403, "student cannot assign courses");
+  const linked = await send(`/api/projects/${opened.project.id}/modules`, {
+    method: "POST",
+    cookie: teacher.cookie,
+    body: { moduleId: "hello-world", course: "python" },
+  });
+  assert(linked.linked.some((row) => row.moduleId === "hello-world"), "module linked to project");
+  const beforeMark = await send(`/api/folders/${students.students[0].id}/pathway`, { cookie: teacher.cookie });
+  const linkedModule = beforeMark.pathways.find((board) => board.course === "python").units
+    .flatMap((unit) => unit.modules).find((mod) => mod.id === "hello-world");
+  assert(linkedModule.status === "linked", "pathway shows a link before a mark");
+  const marked = await send(`/api/folders/${students.students[0].id}/reports`, {
+    method: "POST",
+    cookie: teacher.cookie,
+    body: {
+      body: "Mastered hello world.",
+      skills: [{ moduleId: "hello-world", course: "python", level: "mastered", projectId: opened.project.id }],
+    },
+  });
+  assert(marked.report.skills[0].level === "mastered", "report stores mastery");
+  assert(marked.report.skills[0].projectTitle, "report snapshots the project");
+  const afterMark = await send(`/api/folders/${students.students[0].id}/pathway`, { cookie: teacher.cookie });
+  const mastered = afterMark.pathways.find((board) => board.course === "python").units
+    .flatMap((unit) => unit.modules).find((mod) => mod.id === "hello-world");
+  assert(mastered.status === "mastered", "pathway shows mastery");
+  assert(mastered.projects.some((project) => project.title === marked.report.skills[0].projectTitle), "pathway links the project");
+  const guide = await send(`/api/projects/${opened.project.id}/guide`, { cookie: teacher.cookie });
+  const detail = await send("/api/curriculum/hello-world", { cookie: teacher.cookie });
+  assert(detail.teach.steps.length && detail.code.python && detail.code.java && detail.code.c, "guide has notes and three languages");
+  assert(guide.linked.some((row) => row.moduleId === "hello-world"), "guide lists the linked module");
+  const stillHidden = await send(`/api/folders/${student.user.id}`, { cookie: student.cookie });
+  assert(!stillHidden.reports && !stillHidden.pathway, "student folder still hides reports");
   const lead = await login("lead@teachforth.local", "lead-demo-1");
   const center = await send("/api/center", { cookie: lead.cookie });
   assert(center.blocks.some((block) => block.students.some((row) => row.name === "Jordan Lee")), "lead sees the session");
@@ -200,6 +255,16 @@ try {
   });
   const openedBox = await send(`/api/projects/${box.project.id}`, { cookie: teacher.cookie });
   assert(openedBox.files.some((file) => file.path === "main.js"), "javascript template");
+  const javaBox = await send("/api/sandbox", {
+    method: "POST",
+    cookie: teacher.cookie,
+    body: { title: "Java", language: "java" },
+  });
+  const openedJava = await send(`/api/projects/${javaBox.project.id}`, { cookie: teacher.cookie });
+  assert(openedJava.files.some((file) => file.path === "Main.java"), "java template");
+  let javaOut = "";
+  runJava(openedJava.files.find((file) => file.path === "Main.java").content, { print(text) { javaOut += text; }, readLine() { return null; } });
+  assert(javaOut.includes("Hello from TeachForth"), "java hello runs in the browser runner");
   assert(!openedBox.files.some((file) => file.path === ".teachforth"), "marker stays hidden");
   const renamed = await send(`/api/projects/${box.project.id}/rename`, {
     method: "POST",

@@ -1063,7 +1063,7 @@ function isAssigned(teacherId, studentId) {
 
 function loadProject(id) {
   return db.prepare(
-    `SELECT p.*, u.name AS owner_name FROM projects p
+    `SELECT p.*, u.name AS owner_name, u.role AS owner_role FROM projects p
      JOIN users u ON u.id = p.owner_id
      WHERE p.id = ?`,
   ).get(id);
@@ -1082,6 +1082,7 @@ function projectView(project, user) {
     id: project.id,
     ownerId: project.owner_id,
     ownerName: project.owner_name,
+    ownerRole: project.owner_role || "",
     title: project.title,
     language: project.language,
     notes: "",

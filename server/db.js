@@ -167,6 +167,35 @@ export function openDatabase(file) {
   addColumn(db, "github_states", "purpose", "purpose TEXT NOT NULL DEFAULT 'connect'");
   addColumn(db, "projects", "github_sha", "github_sha TEXT");
   addColumn(db, "projects", "open", "open INTEGER NOT NULL DEFAULT 1");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS enrollments (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      course TEXT NOT NULL CHECK(course IN ('python', 'java', 'c')),
+      assigned_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, course)
+    );
+    CREATE TABLE IF NOT EXISTS project_modules (
+      id INTEGER PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      module_id TEXT NOT NULL,
+      course TEXT NOT NULL CHECK(course IN ('python', 'java', 'c')),
+      created_at TEXT NOT NULL,
+      UNIQUE(project_id, module_id, course)
+    );
+    CREATE TABLE IF NOT EXISTS skill_marks (
+      id INTEGER PRIMARY KEY,
+      report_id INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+      student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      module_id TEXT NOT NULL,
+      course TEXT NOT NULL CHECK(course IN ('python', 'java', 'c')),
+      level TEXT NOT NULL CHECK(level IN ('practiced', 'mastered')),
+      project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+      project_title TEXT NOT NULL DEFAULT '',
+      github_url TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+  `);
   db.prepare("UPDATE users SET role = 'teacher' WHERE role = 'lead_teacher'").run();
   db.exec(`
     INSERT OR IGNORE INTO chapter_members (chapter_id, user_id)
