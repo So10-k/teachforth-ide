@@ -70,17 +70,19 @@ async function chaptersPage(main, me, api, esc) {
     "A chapter is a partner site. Open one for its students, blocks, and leads.",
     `${me.role === "admin" ? `<section class="panel"><h2>New chapter</h2><div class="row"><input id="chapter-name" placeholder="Chapter name"><input id="chapter-place" placeholder="City or country"><button class="btn" id="add-chapter">Create</button></div><p class="error" id="err"></p></section>` : ""}
      <input class="search" id="q" placeholder="Search chapters">
-     <div class="cards" id="list">${chapters.map((chapter) => chapterCard(chapter, esc)).join("") || `<p class="muted">No chapters yet.</p>`}</div>`,
+     <div class="cards" id="list">${chapters.map((chapter) => chapterCard(chapter, esc, me.role === "admin")).join("") || `<p class="muted">No chapters yet.</p>`}</div>`,
   );
   const all = chapters;
   const paint = () => {
     const q = document.querySelector("#q").value.trim().toLowerCase();
     const rows = all.filter((chapter) => !q || `${chapter.name} ${chapter.place || ""}`.toLowerCase().includes(q));
-    document.querySelector("#list").innerHTML = rows.map((chapter) => chapterCard(chapter, esc)).join("") || `<p class="muted">No match.</p>`;
+    document.querySelector("#list").innerHTML = rows.map((chapter) => chapterCard(chapter, esc, me.role === "admin")).join("") || `<p class="muted">No match.</p>`;
     bindChapters(main);
+    bindChapterDeletes(main, api, () => chaptersPage(main, me, api, esc));
   };
   document.querySelector("#q").oninput = paint;
   bindChapters(main);
+  bindChapterDeletes(main, api, () => chaptersPage(main, me, api, esc));
   const add = document.querySelector("#add-chapter");
   if (add) add.onclick = async () => {
     try {
@@ -98,12 +100,14 @@ async function chapterPage(main, id, me, api, esc) {
     api("/api/people"),
   ]);
   const students = members.filter((person) => person.role === "student");
+  const chapterTeachers = members.filter((person) => person.role !== "student");
   const teachers = people.filter((person) => person.role === "teacher");
   const leadsPool = people.filter((person) => person.role === "chapter_lead");
   main.innerHTML = page(
     esc(chapter.name),
     esc(chapter.place || "No city yet"),
-    `<div class="chips">${leads.map((lead) => `<span class="chip">Lead · ${esc(lead.name)}</span>`).join("") || `<span class="chip">No chapter lead</span>`}</div>
+    `${me.role === "admin" ? `<div class="row"><button class="btn-ghost danger" id="delete-chapter">Delete chapter</button><p class="muted">People stay. Blocks, pairs, and chapter membership go with it. Session reports stay on the student.</p></div>` : ""}
+     <div class="chips">${leads.map((lead) => `<span class="chip">Lead · ${esc(lead.name)}${me.role === "admin" ? `<button class="chip-x" data-drop-lead="${lead.id}" title="Remove lead">×</button>` : ""}</span>`).join("") || `<span class="chip">No chapter lead</span>`}</div>
      <div class="split">
        <section class="panel"><h2>Leadership</h2>
          ${typeField("lead-q", "Type a chapter lead")}
@@ -121,7 +125,9 @@ async function chapterPage(main, id, me, api, esc) {
        </section>
      </div>
      <h2 class="unit">Students</h2>
-     <div class="cards">${students.map((student) => personCard(student, esc)).join("") || `<p class="muted">No students in this chapter yet.</p>`}</div>
+     <div class="cards">${students.map((student) => `<div class="member-card">${personCard(student, esc)}<button class="btn-ghost danger" data-drop-member="${student.id}">Remove</button></div>`).join("") || `<p class="muted">No students in this chapter yet.</p>`}</div>
+     <h2 class="unit">Teachers</h2>
+     <div class="cards">${chapterTeachers.map((teacher) => `<div class="member-card">${personCard(teacher, esc)}<button class="btn-ghost danger" data-drop-member="${teacher.id}">Remove</button></div>`).join("") || `<p class="muted">No teachers in this chapter yet.</p>`}</div>
      <h2 class="unit">Blocks</h2>
      ${blocks.map((block) => blockCard(block, esc)).join("") || `<p class="muted">No blocks yet.</p>`}`,
   );
@@ -151,6 +157,24 @@ async function chapterPage(main, id, me, api, esc) {
   };
   bindProfiles(main);
   bindBlocks(main, api, () => chapterPage(main, id, me, api, esc));
+  const dropChapter = main.querySelector("#delete-chapter");
+  if (dropChapter) dropChapter.onclick = async () => {
+    if (!confirm(`Delete ${chapter.name}? People stay. Blocks and memberships are removed.`)) return;
+    await api(`/api/chapters/${id}`, { method: "DELETE" });
+    location.hash = "#/chapters";
+  };
+  for (const button of main.querySelectorAll("[data-drop-lead]")) {
+    button.onclick = async () => {
+      await api(`/api/chapters/${id}/staff`, { method: "DELETE", body: { userId: Number(button.dataset.dropLead) } });
+      chapterPage(main, id, me, api, esc);
+    };
+  }
+  for (const button of main.querySelectorAll("[data-drop-member]")) {
+    button.onclick = async () => {
+      await api(`/api/chapters/${id}/members`, { method: "DELETE", body: { userId: Number(button.dataset.dropMember) } });
+      chapterPage(main, id, me, api, esc);
+    };
+  }
 }
 
 async function studentsPage(main, api, esc) {
@@ -385,8 +409,9 @@ function liveCards(blocks, esc) {
   return blocks.map((block) => `<section class="panel"><h2>${esc(block.name)}</h2><p class="muted">${esc(block.chapterName || "")} · lead ${esc(block.leadName || "unassigned")}</p><div class="cards">${(block.students || []).map((student) => `<article class="card"><h3>${esc(student.name)}</h3><p>with ${esc(student.teacherName)}</p><p class="${student.focus ? "live-dot" : "muted"}">${student.focus ? `In ${esc(student.focus.file || "a file")}` : esc(student.latest?.title || "No project yet")}</p><button class="btn" data-student="${student.id}">Profile</button></article>`).join("") || `<p class="muted">No pairs yet.</p>`}</div></section>`).join("");
 }
 
-function chapterCard(chapter, esc) {
-  return `<button class="card link" data-chapter="${chapter.id}"><h3>${esc(chapter.name)}</h3><p class="muted">${esc(chapter.place || "Chapter")}</p></button>`;
+function chapterCard(chapter, esc, canDelete) {
+  if (!canDelete) return `<button class="card link" data-chapter="${chapter.id}"><h3>${esc(chapter.name)}</h3><p class="muted">${esc(chapter.place || "Chapter")}</p></button>`;
+  return `<article class="card member-card"><button class="card link" data-chapter="${chapter.id}"><h3>${esc(chapter.name)}</h3><p class="muted">${esc(chapter.place || "Chapter")}</p></button><button class="btn-ghost danger" data-delete-chapter="${chapter.id}">Delete</button></article>`;
 }
 
 function personCard(student, esc) {
@@ -394,7 +419,7 @@ function personCard(student, esc) {
 }
 
 function blockCard(block, esc) {
-  return `<section class="panel"><div class="row" style="justify-content:space-between"><h2>${esc(block.name)}</h2><span class="chip ${block.status === "live" ? "live" : ""}">${esc(block.status)}</span></div><p class="muted">Session lead ${esc(block.leadName || "not promoted")} · ${(block.pairs || []).length} pairs</p><div class="row">${block.status !== "live" ? `<button class="btn-ghost" data-live="${block.id}">Start</button>` : `<button class="btn-ghost" data-end="${block.id}">End</button>`}</div></section>`;
+  return `<section class="panel"><div class="row" style="justify-content:space-between"><h2>${esc(block.name)}</h2><span class="chip ${block.status === "live" ? "live" : ""}">${esc(block.status)}</span></div><p class="muted">Session lead ${esc(block.leadName || "not promoted")} · ${(block.pairs || []).length} pairs</p><div class="row">${block.status !== "live" ? `<button class="btn-ghost" data-live="${block.id}">Start</button>` : `<button class="btn-ghost" data-end="${block.id}">End</button>`}<button class="btn-ghost danger" data-delete-block="${block.id}">Delete</button></div></section>`;
 }
 
 function profileHead(data, esc, staff) {
@@ -595,6 +620,25 @@ function bindBlocks(main, api, again) {
   for (const button of main.querySelectorAll("[data-end]")) {
     button.onclick = async () => {
       await api(`/api/blocks/${button.dataset.end}/status`, { method: "POST", body: { status: "ended" } });
+      again();
+    };
+  }
+  for (const button of main.querySelectorAll("[data-delete-block]")) {
+    button.onclick = async () => {
+      if (!confirm("Delete this block? Pairs go with it. Student reports stay.")) return;
+      await api(`/api/blocks/${button.dataset.deleteBlock}`, { method: "DELETE" });
+      again();
+    };
+  }
+}
+
+function bindChapterDeletes(main, api, again) {
+  for (const button of main.querySelectorAll("[data-delete-chapter]")) {
+    button.onclick = async (event) => {
+      event.stopPropagation();
+      const name = button.closest("article")?.querySelector("h3")?.textContent || "this chapter";
+      if (!confirm(`Delete ${name}? People stay. Blocks and memberships are removed.`)) return;
+      await api(`/api/chapters/${button.dataset.deleteChapter}`, { method: "DELETE" });
       again();
     };
   }

@@ -237,9 +237,16 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
 .chip { background: #f3f5fb; border-radius: 999px; padding: 4px 10px; font-size: 13px; }
 .chip.live { background: #e5f7ef; color: #137a52; }
 .profile { background: white; border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
-.cover { height: 92px; background: linear-gradient(120deg, #3b6ef6, #7a4de0); }
-.profile-row { display: flex; gap: 14px; align-items: end; padding: 0 16px 16px; margin-top: -28px; }
-.profile-row h1 { margin: 0; }
+.cover { height: 88px; background: linear-gradient(120deg, #3b6ef6, #7a4de0); }
+.profile-row { display: flex; gap: 16px; align-items: flex-start; padding: 0 18px 18px; }
+.profile-row .avatar.lg { margin-top: -32px; border: 3px solid white; box-shadow: 0 0 0 1px var(--line); background: white; flex: none; }
+.profile-row > div { padding-top: 14px; min-width: 0; }
+.profile-row h1 { margin: 0; color: var(--ink, #1d2440); }
+.profile-row .muted { color: var(--muted); }
+.btn-ghost.danger { color: #b42318; border-color: #f3c1bc; }
+.chip-x { border: 0; background: transparent; color: #5c678a; margin-left: 6px; padding: 0; cursor: pointer; font-size: 14px; line-height: 1; }
+.member-card { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.member-card > .card { width: 100%; }
 .typeahead { position: relative; display: block; }
 .suggest { position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px); background: white; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgba(29,36,64,.08); padding: 6px; }
 .suggest button { display: flex; width: 100%; justify-content: space-between; border: 0; background: transparent; padding: 8px; border-radius: 8px; text-align: left; }

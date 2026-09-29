@@ -8,7 +8,7 @@ The repo is private. Treat it like a shared team codebase: read this before chan
 
 An admin creates every account. There is no public signup.
 
-- **Admin** manages accounts, chapters, blocks, lessons, and sandboxes.
+- **Admin** manages accounts, chapters, blocks, lessons, and sandboxes. Deleting a chapter removes its blocks, pairs, leads, and memberships. Accounts and session reports stay.
 - **Chapter lead** sees their chapter and the students who have a teacher in a live block.
 - **Teacher** opens a student's project only when paired in a live block, or when they are that block's session lead. A session lead is a normal teacher promoted for one block, not a separate account type.
 - **Student** sees only their own portfolio. Their TeachForth account becomes their GitHub account after they connect. Closing a project commits it and removes the local files. Only the student can commit.

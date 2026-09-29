@@ -96,8 +96,11 @@ export async function orgRoute(ctx, path) {
   if (path === "/api/chapters" && req.method === "POST") return createChapter(ctx);
   const staff = path.match(/^\/api\/chapters\/(\d+)\/staff$/);
   if (staff && req.method === "POST") return addStaff(ctx, Number(staff[1]));
+  if (staff && req.method === "DELETE") return removeStaff(ctx, Number(staff[1]));
   if (path === "/api/blocks" && req.method === "GET") return send(res, 200, { blocks: listBlocks(db, user) });
   if (path === "/api/blocks" && req.method === "POST") return createBlock(ctx);
+  const blockItem = path.match(/^\/api\/blocks\/(\d+)$/);
+  if (blockItem && req.method === "DELETE") return deleteBlock(ctx, Number(blockItem[1]));
   const status = path.match(/^\/api\/blocks\/(\d+)\/status$/);
   if (status && req.method === "POST") return setBlockStatus(ctx, Number(status[1]));
   const pair = path.match(/^\/api\/blocks\/(\d+)\/pairs$/);
@@ -123,6 +126,7 @@ export async function orgRoute(ctx, path) {
   if (studentRepo && req.method === "POST") return createStudentRepo(ctx, Number(studentRepo[1]));
   const chapter = path.match(/^\/api\/chapters\/(\d+)$/);
   if (chapter && req.method === "GET") return send(res, 200, chapterProfile(db, user, Number(chapter[1])));
+  if (chapter && req.method === "DELETE") return deleteChapter(ctx, Number(chapter[1]));
   const members = path.match(/^\/api\/chapters\/(\d+)\/members$/);
   if (members && req.method === "POST") return addMember(ctx, Number(members[1]));
   if (members && req.method === "DELETE") return removeMember(ctx, Number(members[1]));
@@ -165,6 +169,37 @@ async function createChapter(ctx) {
   );
   audit(user, "create_chapter", null, name);
   send(res, 201, { chapter: { id, name } });
+}
+
+async function deleteChapter(ctx, chapterId) {
+  const { db, res, user, send, fail, audit } = ctx;
+  if (user.role !== "admin") fail(403, "Only an admin can delete a chapter");
+  const chapter = db.prepare("SELECT * FROM chapters WHERE id = ?").get(chapterId);
+  if (!chapter) fail(404, "Chapter not found");
+  db.prepare("DELETE FROM chapters WHERE id = ?").run(chapterId);
+  audit(user, "delete_chapter", null, chapter.name);
+  send(res, 200, { ok: true });
+}
+
+async function removeStaff(ctx, chapterId) {
+  const { db, req, res, user, send, fail, readJson, audit } = ctx;
+  if (user.role !== "admin") fail(403, "Only an admin can remove a chapter lead");
+  const chapter = db.prepare("SELECT * FROM chapters WHERE id = ?").get(chapterId);
+  if (!chapter) fail(404, "Chapter not found");
+  const body = await readJson(req);
+  db.prepare("DELETE FROM chapter_staff WHERE chapter_id = ? AND user_id = ?").run(chapterId, Number(body.userId));
+  audit(user, "chapter_unstaff", null, `${body.userId} - ${chapter.name}`);
+  send(res, 200, { ok: true });
+}
+
+async function deleteBlock(ctx, blockId) {
+  const { db, res, user, send, fail, audit } = ctx;
+  const block = loadBlock(db, blockId);
+  if (!block) fail(404, "Block not found");
+  if (!canManageBlock(db, user, block)) fail(403, "You cannot delete this block");
+  db.prepare("DELETE FROM blocks WHERE id = ?").run(blockId);
+  audit(user, "delete_block", null, block.name);
+  send(res, 200, { ok: true });
 }
 
 async function addStaff(ctx, chapterId) {

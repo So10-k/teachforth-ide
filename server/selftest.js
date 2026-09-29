@@ -152,6 +152,30 @@ try {
   const chapter = await send("/api/chapters", { cookie: admin.cookie });
   const profile = await send(`/api/chapters/${chapter.chapters[0].id}`, { cookie: admin.cookie });
   assert(profile.members.some((row) => row.name === "Jordan Lee"), "chapter profile lists the student");
+  const tempChapter = await send("/api/chapters", {
+    method: "POST",
+    cookie: admin.cookie,
+    body: { name: "Temp chapter", place: "Nowhere" },
+  });
+  const tempBlock = await send("/api/blocks", {
+    method: "POST",
+    cookie: admin.cookie,
+    body: { chapterId: tempChapter.chapter.id, name: "Temp block" },
+  });
+  const deniedDelete = await send(`/api/chapters/${tempChapter.chapter.id}`, {
+    method: "DELETE",
+    cookie: student.cookie,
+    ok: false,
+  });
+  assert(deniedDelete.status === 403, "student cannot delete a chapter");
+  await send(`/api/blocks/${tempBlock.block.id}`, { method: "DELETE", cookie: admin.cookie });
+  const afterBlock = await send(`/api/chapters/${tempChapter.chapter.id}`, { cookie: admin.cookie });
+  assert(afterBlock.blocks.length === 0, "block delete removes the block");
+  await send(`/api/chapters/${tempChapter.chapter.id}`, { method: "DELETE", cookie: admin.cookie });
+  const missingChapter = await send(`/api/chapters/${tempChapter.chapter.id}`, { cookie: admin.cookie, ok: false });
+  assert(missingChapter.status === 404, "deleted chapter is gone");
+  const kept = await send("/api/chapters", { cookie: admin.cookie });
+  assert(kept.chapters.some((row) => row.id === chapter.chapters[0].id), "other chapters stay");
   const localProject = await send("/api/projects", {
     method: "POST",
     cookie: student.cookie,
