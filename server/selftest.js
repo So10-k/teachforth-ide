@@ -345,7 +345,7 @@ try {
   assert(noPage.status === 400, "python sandbox cannot publish");
   const shell = await fetch(`${base}/preview/${page.id}/`);
   const shellText = await shell.text();
-  assert(shell.status === 200 && shellText.includes('sandbox="allow-scripts"'), "preview shell stays sandboxed");
+  assert(shell.status === 200 && shellText.includes('sandbox="allow-scripts allow-modals"') && !shellText.includes("allow-same-origin"), "preview shell stays sandboxed");
   assert(!shellText.includes("Hello from TeachForth"), "preview shell has no student code");
 
   const anonRun = await send("/api/runtime/runs", { method: "POST", ok: false });
@@ -371,7 +371,7 @@ try {
   const preview = await send(`/api/projects/${page.id}/preview`, { method: "POST", cookie: teacher.cookie, body: {} });
   const previewRes = await fetch(`${base}/preview-site/${preview.token}/index.html`);
   const previewHtml = await previewRes.text();
-  assert(previewRes.headers.get("content-security-policy") === "sandbox allow-scripts", "preview stays sandboxed");
+  assert(previewRes.headers.get("content-security-policy") === "sandbox allow-scripts allow-modals", "preview stays sandboxed");
   assert(previewHtml.includes("script.js") && !previewHtml.includes(".teachforth"), "preview can load script.js");
   const locked = await send(`/api/projects/${page.id}/controls`, {
     method: "PATCH",

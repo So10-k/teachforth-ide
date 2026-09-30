@@ -1202,7 +1202,7 @@ function servePreviewSite(res, url) {
   }
   res.writeHead(200, {
     "content-type": found.type,
-    "content-security-policy": "sandbox allow-scripts",
+    "content-security-policy": "sandbox allow-scripts allow-modals",
     "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
     "cache-control": "private, no-store",

@@ -30,6 +30,14 @@ const ICON = {
   lead: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 4 6v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6zm-1 13-3.5-3.5 1.4-1.4L11 12.2l4.1-4.1 1.4 1.4z"/></svg>`,
 };
 const CHEVRON = `<svg class="twist-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M6 4l4 4-4 4z"/></svg>`;
+const LANG_ICON = {
+  py: `<svg class="ficon" viewBox="0 0 32 32" aria-hidden="true"><path fill="#3776AB" d="M15.8 2.2c-4.6 0-4.4 2-4.4 2l.01 2.1h4.6v.6H8.6S4.8 6.6 4.8 12.6c0 6 3.4 5.8 3.4 5.8h2v-2s-.1-2.3 2.3-2.3h4.5s2.2.2 2.2-2.2V4.5s.1-2.3-3.4-2.3zm-2.5 2.1c.7 0 1.2.5 1.2 1.2s-.5 1.2-1.2 1.2-1.2-.5-1.2-1.2.5-1.2 1.2-1.2z"/><path fill="#FFD43B" d="M16.2 29.8c4.6 0 4.4-2 4.4-2l-.01-2.1h-4.6v-.6h7.4s3.8-.3 3.8-6.3-3.4-5.8-3.4-5.8h-2v2s.1 2.3-2.3 2.3h-4.5s-2.2-.2-2.2 2.2v7.2s-.1 2.3 3.5 2.3zm2.5-2.1c-.7 0-1.2-.5-1.2-1.2s.5-1.2 1.2-1.2 1.2.5 1.2 1.2-.5 1.2-1.2 1.2z"/></svg>`,
+  html: `<svg class="ficon" viewBox="0 0 16 16" aria-hidden="true"><path fill="#E34F26" d="M1.4 1h13.2L13.3 14.2 8 15.6 2.7 14.2z"/><path fill="#F16529" d="M8 2.1v12.3l4.2-1.2 1.1-11.1z"/><path fill="#EBEBEB" d="M8 5.1H4.5l.2 1.8H8v1.5H3.4l.4 3.7L8 13.3V11.7l-2.2-.6.2-1.3H8z"/><path fill="#fff" d="M8 5.1v1.6h2.8l-.2 1.7H8v1.4h2.3l-.3 2.6L8 13.3V11.7l2-.5-.1-1.2H8V8.4h3.2l.3-3.3z"/></svg>`,
+  htm: `<svg class="ficon" viewBox="0 0 16 16" aria-hidden="true"><path fill="#E34F26" d="M1.4 1h13.2L13.3 14.2 8 15.6 2.7 14.2z"/><path fill="#F16529" d="M8 2.1v12.3l4.2-1.2 1.1-11.1z"/><path fill="#EBEBEB" d="M8 5.1H4.5l.2 1.8H8v1.5H3.4l.4 3.7L8 13.3V11.7l-2.2-.6.2-1.3H8z"/><path fill="#fff" d="M8 5.1v1.6h2.8l-.2 1.7H8v1.4h2.3l-.3 2.6L8 13.3V11.7l2-.5-.1-1.2H8V8.4h3.2l.3-3.3z"/></svg>`,
+  css: `<svg class="ficon" viewBox="0 0 16 16" aria-hidden="true"><path fill="#264DE4" d="M1.4 1h13.2L13.3 14.2 8 15.6 2.7 14.2z"/><path fill="#2965F1" d="M8 2.1v12.3l4.2-1.2 1.1-11.1z"/><path fill="#EBEBEB" d="M8 5.1H4.5l.2 1.8H8v1.5H3.5l.2 2.2h2.5l.2 1.5L8 13.3V11.7l-1.4-.4.1-.9H8z"/><path fill="#fff" d="M8 5.1v1.6h2.8l-.1 1.3H8v1.5h2.4l-.2 2.2L8 13.3V11.7l1.3-.3-.1-.9H8V8.4h3.3l.3-3.3z"/></svg>`,
+  js: `<svg class="ficon" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="2" fill="#F7DF1E"/><text x="8" y="11.6" text-anchor="middle" font-size="7.4" font-family="Arial,sans-serif" font-weight="700" fill="#323330">JS</text></svg>`,
+  mjs: `<svg class="ficon" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="2" fill="#F7DF1E"/><text x="8" y="11.6" text-anchor="middle" font-size="7.4" font-family="Arial,sans-serif" font-weight="700" fill="#323330">JS</text></svg>`,
+};
 
 window.addEventListener("pagehide", () => {
   if (closing || session?.me?.role !== "student" || editorState?.project?.kind !== "github") return;
@@ -125,7 +133,7 @@ export async function openEditor({ app, id, me, api, esc }) {
             <input id="term-input" spellcheck="false" autocapitalize="off" aria-label="Terminal command">
           </form>
         </div>
-        <iframe id="runner" sandbox="allow-scripts" title="Runner"></iframe>
+        <iframe id="runner" sandbox="allow-scripts allow-modals" title="Runner"></iframe>
       </section>
     </div>
     <footer class="statusbar"><span id="status-file">No file</span><span class="spacer"></span><span id="status-lang"></span></footer>
@@ -279,7 +287,8 @@ function cssAttr(value) {
 
 function fileIcon(path) {
   const ext = String(path).split(".").pop().toLowerCase();
-  const color = { py: "#4b8bbe", java: "#e07a1f", c: "#8a8a8a", h: "#8a8a8a", cpp: "#e24a8d", cc: "#e24a8d", html: "#e34c26", css: "#7a4de0", js: "#f1e05a", mjs: "#f1e05a", json: "#f1e05a", md: "#6a9fb5", txt: "#cccccc" }[ext] || "#858585";
+  if (LANG_ICON[ext]) return LANG_ICON[ext];
+  const color = { java: "#e07a1f", c: "#8a8a8a", h: "#8a8a8a", cpp: "#e24a8d", cc: "#e24a8d", json: "#f1e05a", md: "#6a9fb5", txt: "#cccccc" }[ext] || "#858585";
   return `<svg class="ficon" viewBox="0 0 16 16" aria-hidden="true"><path fill="${color}" d="M3 1h7l3 3v11H3z"/><path fill="#1e1e1e" d="M10 1v3h3"/></svg>`;
 }
 

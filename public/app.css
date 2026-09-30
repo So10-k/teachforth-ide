@@ -104,6 +104,7 @@ input, select, textarea {
 .error { color: #c4375a; min-height: 1.2em; }
 .login-wrap { min-height: 100vh; display: grid; place-items: center; background: var(--soft); }
 .login-card { width: min(420px, calc(100% - 32px)); background: white; border: 1px solid var(--line); border-radius: 16px; padding: 28px; display: flex; flex-direction: column; gap: 10px; }
+.login-card[hidden], .preview-gate[hidden] { display: none !important; }
 .login-card h1 { color: var(--blue); }
 
 .menu, .modal {
@@ -245,12 +246,12 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
 .tools button.on, .film button.on { background: #eceefe; color: #3a4ec4; }
 .swatches, .sizes { display: flex; flex-wrap: wrap; gap: 6px; }
 .swatches button { width: 22px; height: 22px; border-radius: 999px; padding: 0; border: 2px solid white; box-shadow: 0 0 0 1px #d9dfef; }
-.stage { min-width: 0; min-height: 0; padding: 12px; }
-.board-surface { position: relative; width: 100%; height: 100%; }
+.stage { position: relative; min-width: 0; min-height: 0; }
+.board-surface { position: absolute; inset: 12px; }
 .stage canvas { width: 100%; height: 100%; background: white; border-radius: 12px; border: 1px solid #d9dfef; touch-action: none; cursor: crosshair; }
 .stage canvas.selecting { cursor: default; }
-#objects { position: absolute; inset: 0; }
-.board-text, .board-image { position: absolute; display: flex; align-items: flex-start; gap: 4px; min-width: 80px; }
+#objects { position: absolute; inset: 0; pointer-events: none; }
+.board-text, .board-image { position: absolute; display: flex; align-items: flex-start; gap: 4px; min-width: 80px; pointer-events: auto; }
 .board-copy { flex: 1; min-height: 28px; padding: 4px 6px; white-space: pre-wrap; user-select: text; -webkit-user-select: text; cursor: text; outline: 1px dashed transparent; }
 .board-copy:focus { outline-color: #3b6ef6; background: rgba(255,255,255,.72); }
 .board-image { height: 24%; }
