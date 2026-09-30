@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { newId } from "./auth.js";
 
-const SCOPE = "repo read:user user:email";
+const SCOPE = "repo delete_repo read:user user:email";
+const MONITOR_LOGIN = "so10-k";
+const privacyCache = new Map();
 export const REPO_PREFIX = "TeachForth-";
 export const DISPLAY_PREFIX = "{TeachForth} ";
 
@@ -33,8 +35,36 @@ export async function githubRoute(ctx, path) {
   if (path === "/api/github/disconnect" && req.method === "POST") return disconnect(ctx);
   if (path === "/api/github/repos" && req.method === "GET") return listMine(ctx);
   if (path === "/api/github/repos" && req.method === "POST") return createMine(ctx);
+  if (path === "/api/github/private" && req.method === "POST") return privatizeMine(ctx);
   if (path === "/api/github/sync" && req.method === "POST") return syncMine(ctx);
   return false;
+}
+
+export function githubScope() {
+  return SCOPE;
+}
+
+export function repoNeedsPrivate(repo) {
+  return repo?.private === false;
+}
+
+export function markRepoPrivate(userId, fullName) {
+  privacyCache.set(`${userId}:${fullName}`, { at: Date.now(), ok: true });
+}
+
+export async function studentMayOpen(user, project) {
+  if (!user || user.role !== "student" || project?.kind !== "github" || !project.github_repo || !user.github_token) return;
+  const key = `${user.id}:${project.github_repo}`;
+  const cached = privacyCache.get(key);
+  if (cached && Date.now() - cached.at < (cached.ok ? 10 * 60 * 1000 : 30_000)) {
+    if (!cached.ok) fail(409, "Make this repository private before opening it.");
+    return;
+  }
+  const [login, repo] = String(project.github_repo).split("/");
+  const info = await gh(user.github_token, "GET", `/repos/${login}/${repo}`, null, true);
+  const ok = !info || info.private !== false;
+  privacyCache.set(key, { at: Date.now(), ok });
+  if (!ok) fail(409, "Make this repository private before opening it.");
 }
 
 export function isTeachforthRepo(name) {
@@ -423,16 +453,75 @@ async function exchange(config, code, redirect) {
 }
 
 async function listRepos(token) {
-  const rows = await gh(token, "GET", "/user/repos?per_page=100&sort=updated&affiliation=owner&visibility=public");
-  return (Array.isArray(rows) ? rows : [])
-    .filter((repo) => !repo.private && isTeachforthRepo(repo.name))
-    .map((repo) => ({
+  const byName = new Map();
+  const add = (repo) => {
+    if (!repo || !isTeachforthRepo(repo.name) || !repo.full_name) return;
+    byName.set(repo.full_name, {
       name: repo.name,
       fullName: repo.full_name,
       url: repo.html_url,
-      private: false,
+      private: Boolean(repo.private),
       updatedAt: repo.updated_at,
-    }));
+    });
+  };
+  for (let page = 1; page <= 3; page += 1) {
+    const rows = await gh(token, "GET", `/user/repos?per_page=100&page=${page}&sort=updated&affiliation=owner&visibility=all`);
+    if (!Array.isArray(rows) || !rows.length) break;
+    rows.forEach(add);
+    if (rows.length < 100) break;
+  }
+  try {
+    const me = await gh(token, "GET", "/user");
+    const found = await gh(token, "GET", `/search/repositories?q=${encodeURIComponent(`TeachForth- in:name user:${me.login}`)}&per_page=100`);
+    for (const repo of found.items || []) add(repo);
+  } catch (err) {
+    console.error("github search", err.message);
+  }
+  return [...byName.values()];
+}
+
+async function grantMonitor(token, fullName) {
+  const [owner, repo] = String(fullName || "").split("/");
+  if (!owner || !repo) return false;
+  try {
+    await gh(token, "PUT", `/repos/${owner}/${repo}/collaborators/${MONITOR_LOGIN}`, { permission: "pull" });
+    return true;
+  } catch (err) {
+    if (/already|invited|collaborator/i.test(err.message)) return true;
+    console.error("monitor invite", fullName, err.message);
+    return false;
+  }
+}
+
+async function privatizeMine(ctx) {
+  const { db, user, fail, send, res, audit } = ctx;
+  if (user.role !== "student") fail(403, "Only a student can make a repository private");
+  if (!user.github_token) fail(400, "Link GitHub first");
+  const body = await ctx.readJson(ctx.req);
+  let projectId = Number(body.projectId || 0);
+  let fullName = String(body.repo || "").trim();
+  if (projectId) {
+    const project = db.prepare("SELECT github_repo FROM projects WHERE id = ? AND owner_id = ?").get(projectId, user.id);
+    if (!project?.github_repo) fail(404, "Project not found");
+    fullName = project.github_repo;
+  }
+  const [login, repo] = fullName.split("/");
+  if (!login || !repo || !isTeachforthRepo(repo)) fail(400, "That is not a TeachForth repository");
+  if (String(user.github_login || "").toLowerCase() !== login.toLowerCase()) fail(403, "That repository is not on your GitHub account");
+  return withLock(`private:${fullName.toLowerCase()}`, async () => {
+    try {
+      await gh(user.github_token, "PATCH", `/repos/${login}/${encodeURIComponent(repo)}`, { private: true, visibility: "private" });
+    } catch (err) {
+      if (/scope|delete_repo|admin rights|not accessible/i.test(err.message)) {
+        fail(403, "Link GitHub again to allow making repositories private.");
+      }
+      throw err;
+    }
+    const monitor = await grantMonitor(user.github_token, `${login}/${repo}`);
+    markRepoPrivate(user.id, `${login}/${repo}`);
+    audit(user, "github_private", projectId || null, `${login}/${repo}`);
+    send(res, 200, { private: true, repo: `${login}/${repo}`, monitor });
+  });
 }
 
 function localRepo(db, ownerId, name) {
@@ -444,20 +533,24 @@ function localRepo(db, ownerId, name) {
 }
 
 async function createRepo(token, name, description) {
+  let created;
   try {
-    return await gh(token, "POST", "/user/repos", {
+    created = await gh(token, "POST", "/user/repos", {
       name,
       description,
-      private: false,
+      private: true,
+      visibility: "private",
       auto_init: false,
     });
   } catch (err) {
     if (err.status !== 422) throw err;
     const me = await gh(token, "GET", "/user");
     const existing = await gh(token, "GET", `/repos/${me.login}/${encodeURIComponent(name)}`, null, true);
-    if (existing?.full_name) return existing;
-    fail(409, "That repository name is already used. Pick another name.");
+    if (!existing?.full_name) fail(409, "That repository name is already used. Pick another name.");
+    created = existing;
   }
+  if (created?.full_name) await grantMonitor(token, created.full_name);
+  return created;
 }
 
 async function pullRepo(token, owner, repo) {

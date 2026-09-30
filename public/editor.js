@@ -55,6 +55,26 @@ export async function openEditor({ app, id, me, api, esc }) {
   try {
     opened = await api(`/api/projects/${id}`);
   } catch (err) {
+    if (err.status === 409 && /private/i.test(err.message)) {
+      app.innerHTML = `<div class="main"><p class="error">${esc(err.message)}</p><button class="btn" id="make-private" type="button">Make private</button><p class="error" id="err"></p><p><a href="#/">Back</a></p></div>`;
+      document.querySelector("#make-private").onclick = async (event) => {
+        const button = event.currentTarget;
+        if (button.disabled) return;
+        button.disabled = true;
+        try {
+          await api("/api/github/private", { method: "POST", body: { projectId: id } });
+          openEditor({ app, id, me, api, esc });
+        } catch (error) {
+          button.disabled = false;
+          const note = document.querySelector("#err");
+          note.textContent = error.message;
+          if (/link github/i.test(error.message) && !document.querySelector("a[href='/api/github/connect']")) {
+            note.insertAdjacentHTML("afterend", `<p><a class="btn" href="/api/github/connect">Link GitHub again</a></p>`);
+          }
+        }
+      };
+      return;
+    }
     app.innerHTML = `<div class="main"><p class="error">${esc(err.message)}</p><a href="#/">Back</a></div>`;
     return;
   }

@@ -7,7 +7,7 @@ import { createHub, focus } from "./live.js";
 import { canAccessProject, canSeeStudent, orgRoute, recordRevision, studentsFor as sessionStudents, ROLES } from "./org.js";
 import { hashPassword, verifyPassword, newId, parseCookies, sessionCookie, clearCookie } from "./auth.js";
 import { zipStore } from "./zip.js";
-import { githubRoute, commitStudentProject, hydrateProject, visibleStudentProject, inspectProject, relinkProject, renameLinkedRepo, pace } from "./github.js";
+import { githubRoute, commitStudentProject, hydrateProject, visibleStudentProject, inspectProject, relinkProject, renameLinkedRepo, pace, studentMayOpen } from "./github.js";
 import { normalizeTemplate, projectLanguage, starterEntries, isHiddenFile } from "./templates.js";
 import { publicSlug, publishedUrl, removeSite, siteFiles, writeSite } from "./publish.js";
 import { endRun, pushLine, startRun, waitLine } from "./runtime.js";
@@ -470,6 +470,7 @@ async function projectRoute(req, res, url, user, id, rest) {
   let project = loadProject(id);
   if (!project) fail(404, "Project not found");
   assertCanAccess(user, project);
+  if (user.role === "student" && project.kind === "github") await studentMayOpen(user, project);
   if (project.kind === "github" && !project.open && rest !== "/close") {
     await hydrateProject(db, project);
     project = loadProject(id);

@@ -1,4 +1,4 @@
-import { displayTitle, isTeachforthRepo, parseTeachforthCode, pace, repoNameFor, teachforthMarker, visibleStudentProject } from "./github.js";
+import { displayTitle, githubScope, isTeachforthRepo, parseTeachforthCode, pace, repoNameFor, repoNeedsPrivate, teachforthMarker, visibleStudentProject } from "./github.js";
 import { planSteps } from "./sandbox.js";
 import { rewriteHtml } from "./preview-site.js";
 import { runJava } from "../public/java-lang.js";
@@ -58,6 +58,8 @@ assert(mergeText("abc", "abc", "abYc") === "abYc", "remote edit applies when loc
 assert(mergeText("hello", "hello Sam", "hello!") === "hello Sam!", "non-overlapping edits both survive");
 assert(mergeText("cat", "dog", "rat") === "dog", "overlapping remote edit does not wipe local typing");
 assert(pace("selftest-create", 1, 60_000) === true && pace("selftest-create", 1, 60_000) === false, "repeated repository creates are paced");
+assert(repoNeedsPrivate({ private: false }) === true && repoNeedsPrivate({ private: true }) === false, "only a public repository is blocked");
+assert(githubScope().includes("repo") && githubScope().includes("delete_repo"), "private repositories and visibility changes stay in scope");
 
 try {
   await waitForHealth();
