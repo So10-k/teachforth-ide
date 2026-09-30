@@ -3,6 +3,7 @@ import { planSteps } from "./sandbox.js";
 import { rewriteHtml } from "./preview-site.js";
 import { runJava } from "../public/java-lang.js";
 import { publicSlug, siteFiles } from "./publish.js";
+import { mergeText } from "../public/merge.js";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -52,6 +53,10 @@ assert(javaPlan.steps[0][0] === "javac" && javaPlan.steps[1][0] === "java" && ja
 assert(planSteps("c", "main.c").steps[0][0] === "gcc" && planSteps("cpp", "main.cpp").steps[0][0] === "g++", "c and c++ plans");
 const rewritten = rewriteHtml('<a href="/about.html"></a><script src="script.js"></script>', "abc", { script: true, style: true });
 assert(rewritten.includes("/preview-site/abc/about.html") && rewritten.includes('src="script.js"') && rewritten.includes("style.css"), "preview rewrites root links and keeps script.js");
+assert(mergeText("abc", "abXc", "abc") === "abXc", "local edit survives an unchanged remote");
+assert(mergeText("abc", "abc", "abYc") === "abYc", "remote edit applies when local is unchanged");
+assert(mergeText("hello", "hello Sam", "hello!") === "hello Sam!", "non-overlapping edits both survive");
+assert(mergeText("cat", "dog", "rat") === "dog", "overlapping remote edit does not wipe local typing");
 
 try {
   await waitForHealth();

@@ -130,20 +130,41 @@ input, select, textarea {
 .ide-titlebar button { height: 26px; border-radius: 4px; border: 1px solid transparent; background: #0e639c; color: white; padding: 0 10px; font-weight: 650; }
 .ide-titlebar #run { background: #007acc; }
 .spacer { flex: 1; }
-.ide-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 48px 240px minmax(0, 1fr) minmax(260px, 36%); }
+.ide-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 48px 280px minmax(0, 1fr) minmax(260px, 36%); }
 .activity { background: #333333; display: flex; flex-direction: column; align-items: center; padding-top: 8px; }
-.activity button { width: 48px; height: 42px; border: 0; border-left: 2px solid transparent; background: transparent; color: #858585; font-size: 11px; }
+.activity button { width: 48px; height: 48px; border: 0; border-left: 2px solid transparent; background: transparent; color: #858585; display: grid; place-items: center; }
+.activity button svg { width: 24px; height: 24px; }
 .activity button.on { color: white; border-left-color: #007acc; }
 .explorer { background: #252526; color: #cccccc; min-width: 0; overflow: auto; border-right: 1px solid #1e1e1e; }
 .explorer-head, .explorer-project { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #bbbbbb; }
 .explorer-actions { display: flex; gap: 4px; text-transform: none; letter-spacing: 0; }
 .explorer-actions button, .file-row button { border: 0; background: transparent; color: #cccccc; padding: 2px 4px; height: auto; font-size: 12px; }
-.folder { color: #cccccc; font-weight: 650; padding: 4px 8px; display: flex; align-items: center; gap: 6px; }
+.tree-row { display: flex; align-items: center; gap: 4px; height: 22px; padding-right: 8px; padding-left: calc(8px + var(--depth, 0) * 12px); cursor: pointer; color: #cccccc; }
+.tree-row:hover { background: #2a2d2e; }
+.tree-row.active { background: #37373d; color: white; }
+.tree-row.drop { outline: 1px dashed #007acc; }
+.tree-row .tname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-row .ficon, .tab .ficon { width: 16px; height: 16px; flex: none; }
+.twist, .tree-row .add { width: 16px; height: 16px; border: 0; background: transparent; color: #cccccc; padding: 0; display: grid; place-items: center; }
+.tree-row .add { display: none; margin-left: auto; }
+.tree-row:hover .add { display: grid; }
+.twist-icon { width: 16px; height: 16px; }
+.tree-row.open .twist-icon { transform: rotate(90deg); }
+.tree-row .badge { margin-left: auto; font-size: 10px; color: #c5a35a; }
+.tree-menu { position: fixed; z-index: 40; min-width: 168px; background: #252526; border: 1px solid #454545; box-shadow: 0 8px 24px rgba(0,0,0,.45); padding: 4px; }
+.tree-menu button { display: block; width: 100%; text-align: left; height: 26px; border: 0; background: transparent; color: #cccccc; padding: 0 10px; }
+.tree-menu button:hover { background: #094771; color: white; }
 .folder.drop { outline: 1px dashed #007acc; }
 .folder button, .inline-create button { border: 0; background: transparent; color: #cccccc; height: auto; }
 .inline-create, .inline-name { display: flex; gap: 4px; margin: 4px 8px; }
 .inline-create input, .inline-name, .side-panel input, .side-panel select { background: #3c3c3c; color: #fff; border: 1px solid #3c3c3c; border-radius: 3px; padding: 3px 6px; }
-.side-panel { padding: 8px 10px; display: grid; gap: 8px; }
+#view-files[hidden], #view-teach[hidden], #view-lead[hidden], .side-panel[hidden] { display: none !important; }
+.side-panel { padding: 8px 10px; display: grid; gap: 8px; align-content: start; }
+.control-card { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; padding: 8px; border: 1px solid #3c3c3c; border-radius: 6px; background: #1e1e1e; }
+.control-card strong { display: block; color: white; font-size: 12px; }
+.control-card p { margin: 3px 0 0; color: #9a9a9a; font-size: 11px; line-height: 1.35; }
+.control-card input { margin-top: 2px; }
+.teach-pick { display: grid; gap: 4px; }
 .side-panel label { display: grid; gap: 4px; font-size: 12px; color: #cccccc; }
 .side-panel button { height: 26px; border: 0; border-radius: 4px; background: #0e639c; color: white; }
 .file-row i { font-style: normal; color: #858585; margin-left: 6px; font-size: 11px; }
@@ -225,7 +246,18 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
 .swatches, .sizes { display: flex; flex-wrap: wrap; gap: 6px; }
 .swatches button { width: 22px; height: 22px; border-radius: 999px; padding: 0; border: 2px solid white; box-shadow: 0 0 0 1px #d9dfef; }
 .stage { min-width: 0; min-height: 0; padding: 12px; }
+.board-surface { position: relative; width: 100%; height: 100%; }
 .stage canvas { width: 100%; height: 100%; background: white; border-radius: 12px; border: 1px solid #d9dfef; touch-action: none; cursor: crosshair; }
+.stage canvas.selecting { cursor: default; }
+#objects { position: absolute; inset: 0; }
+.board-text, .board-image { position: absolute; display: flex; align-items: flex-start; gap: 4px; min-width: 80px; }
+.board-copy { flex: 1; min-height: 28px; padding: 4px 6px; white-space: pre-wrap; user-select: text; -webkit-user-select: text; cursor: text; outline: 1px dashed transparent; }
+.board-copy:focus { outline-color: #3b6ef6; background: rgba(255,255,255,.72); }
+.board-image { height: 24%; }
+.board-image img { width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
+.mover, .obj-x { user-select: none; cursor: grab; opacity: 0; border: 0; background: white; color: #1d2440; border-radius: 4px; height: 18px; }
+.board-text:hover .mover, .board-text:hover .obj-x, .board-image:hover .mover, .board-image:hover .obj-x, .board-text:focus-within .mover { opacity: 1; }
+.board-text.locked .mover, .board-text.locked .obj-x, .board-image.locked .mover, .board-image.locked .obj-x { display: none; }
 .film { display: flex; gap: 8px; overflow: auto; padding: 8px 12px 12px; }
 .spacer { flex: 1; }
 .portal { display: flex; flex-direction: column; gap: 16px; }

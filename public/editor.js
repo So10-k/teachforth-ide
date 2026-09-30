@@ -1,4 +1,5 @@
 import { applyBoard, openBoard } from "./board.js";
+import { mergeText } from "./merge.js";
 
 let session = null;
 let editorState = null;
@@ -23,6 +24,13 @@ const JS_WORDS = [
   "length", "innerHTML", "textContent", "style", "preventDefault", "getElementById",
 ];
 
+const ICON = {
+  files: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5h7v6H4zm9 0h7v6h-7zM4 13h7v6H4zm9 0h7v6h-7z"/></svg>`,
+  teach: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3 2 8l10 5 8-4v6h2V8zm-6 9.2V16c0 1.7 2.7 3 6 3s6-1.3 6-3v-3.8l-6 3z"/></svg>`,
+  lead: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 4 6v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6zm-1 13-3.5-3.5 1.4-1.4L11 12.2l4.1-4.1 1.4 1.4z"/></svg>`,
+};
+const CHEVRON = `<svg class="twist-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M6 4l4 4-4 4z"/></svg>`;
+
 window.addEventListener("pagehide", () => {
   if (closing || session?.me?.role !== "student" || editorState?.project?.kind !== "github") return;
   navigator.sendBeacon?.(
@@ -43,11 +51,16 @@ export async function openEditor({ app, id, me, api, esc }) {
     return;
   }
   const files = (opened.files || []).filter((file) => !hidden(file.path));
+  for (const file of files) {
+    file.baseContent = file.content;
+    file.baseRevision = opened.project.revision;
+  }
   const first = files[0]?.path || "";
   editorState = {
     id,
     project: opened.project,
     files,
+    collapsed: new Set(),
     opened: first ? [first] : [],
     active: first,
     dirty: false,
@@ -76,9 +89,9 @@ export async function openEditor({ app, id, me, api, esc }) {
     ${!teacher && opened.project.kind === "github" ? `<div class="banner">Closing this project commits to your GitHub and removes the code from TeachForth.</div>` : ""}
     <div class="ide-body">
       <nav class="activity" aria-label="Views">
-        <button class="on" data-view="files" title="Explorer">Files</button>
-        ${editorState.controls.teacher ? `<button data-view="teach" title="Teacher controls">Teach</button>` : ""}
-        ${editorState.controls.lead ? `<button data-view="lead" title="Session lead">Lead</button>` : ""}
+        <button class="on" data-view="files" title="Explorer" aria-label="Explorer">${ICON.files}</button>
+        ${editorState.controls.teacher ? `<button data-view="teach" title="Teacher controls" aria-label="Teacher controls">${ICON.teach}</button>` : ""}
+        ${editorState.controls.lead ? `<button data-view="lead" title="Session lead" aria-label="Session lead">${ICON.lead}</button>` : ""}
       </nav>
       <aside class="explorer">
         <div id="view-files">
@@ -126,6 +139,22 @@ export async function openEditor({ app, id, me, api, esc }) {
   document.querySelector("#board-btn").onclick = () => openLiveBoard();
   document.querySelector("#new-file").onclick = () => askCreate(document.querySelector("#tree"), "", "notes.txt");
   document.querySelector("#new-folder").onclick = () => askCreate(document.querySelector("#tree"), "", "src", true);
+  const tree = document.querySelector("#tree");
+  tree.oncontextmenu = (event) => openTreeMenu(event);
+  tree.ondragover = (event) => event.preventDefault();
+  tree.ondrop = (event) => {
+    if (event.target.closest("[data-folder]")) return;
+    const from = event.dataTransfer.getData("text/plain");
+    const name = from.split("/").pop();
+    if (from && name && from !== name) movePath(from, name);
+  };
+  if (!document.body.dataset.treeMenu) {
+    document.body.dataset.treeMenu = "1";
+    document.addEventListener("click", () => {
+      const menu = document.querySelector("#tree-menu");
+      if (menu) menu.hidden = true;
+    });
+  }
   for (const button of document.querySelectorAll(".activity button")) {
     button.onclick = () => switchView(button.dataset.view);
   }
@@ -161,6 +190,15 @@ async function leaveProject() {
   location.hash = back;
 }
 
+function takeServerFiles(files, revision) {
+  const old = new Map(editorState.files.map((file) => [file.path, file]));
+  editorState.files = files.filter((file) => !hidden(file.path)).map((file) => {
+    const prev = old.get(file.path);
+    return { ...file, baseContent: prev?.baseContent ?? file.content, baseRevision: revision };
+  });
+  editorState.project.revision = revision;
+}
+
 function visibleFiles() {
   return editorState.files.filter((file) => !hidden(file.path));
 }
@@ -171,7 +209,7 @@ function hidden(path) {
 
 function renderExplorer() {
   const files = visibleFiles();
-  const sig = `${files.map((file) => file.path).join("|")}|${editorState.opened.join(",")}|${editorState.active}`;
+  const sig = `${files.map((file) => `${file.path}:${file.locked ? 1 : 0}${file.hidden ? 1 : 0}${file.skipGithub ? 1 : 0}`).join("|")}|${editorState.opened.join(",")}|${editorState.active}|${[...(editorState.collapsed || [])].sort().join(",")}`;
   const tree = document.querySelector("#tree");
   const tabs = document.querySelector("#file-tabs");
   if (!tree || !tabs) return;
@@ -179,14 +217,14 @@ function renderExplorer() {
     treeSig = sig;
     tree.innerHTML = files.length ? treeHtml(files) : `<p class="muted tree-empty">No files yet.</p>`;
     tabs.innerHTML = editorState.opened.map((path) =>
-      `<button class="tab ${path === editorState.active ? "active" : ""}" data-tab="${esc(path)}"><span>${esc(path.split("/").pop())}</span><i data-close="${esc(path)}" title="Close">×</i></button>`,
+      `<button class="tab ${path === editorState.active ? "active" : ""}" data-tab="${esc(path)}">${fileIcon(path)}<span>${esc(path.split("/").pop())}</span><i data-close="${esc(path)}" title="Close">×</i></button>`,
     ).join("");
   } else {
     for (const button of tabs.querySelectorAll("[data-tab]")) {
       button.classList.toggle("active", button.dataset.tab === editorState.active);
     }
-    for (const button of tree.querySelectorAll("[data-open]")) {
-      button.classList.toggle("active", button.dataset.open === editorState.active);
+    for (const row of tree.querySelectorAll("[data-path]")) {
+      row.classList.toggle("active", row.dataset.path === editorState.active);
     }
   }
   bindTree(tree, tabs);
@@ -214,31 +252,110 @@ function treeHtml(files) {
 
 function nodeHtml(node, depth, prefix = "") {
   let html = "";
+  const collapsed = editorState.collapsed || new Set();
   for (const [name, child] of node.dirs) {
     const folder = prefix ? `${prefix}/${name}` : name;
-    html += `<div class="folder" data-folder="${esc(folder)}" style="padding-left:${depth * 12}px"><span>${esc(name)}</span><button data-add="${esc(folder)}" title="New file in ${esc(folder)}">+</button></div>${nodeHtml(child, depth + 1, folder)}`;
+    const open = !collapsed.has(folder);
+    html += `<div class="tree-row folder ${open ? "open" : ""}" data-folder="${esc(folder)}" style="--depth:${depth}" title="${esc(folder)}">
+      <button class="twist" data-twist="${esc(folder)}" type="button" aria-label="Toggle ${esc(name)}">${CHEVRON}</button>
+      ${folderIcon(open)}
+      <span class="tname">${esc(name)}</span>
+      <button class="add" data-add="${esc(folder)}" type="button" title="New file">+</button>
+    </div>${open ? nodeHtml(child, depth + 1, folder) : ""}`;
   }
   for (const path of node.files) {
     const file = editorState.files.find((item) => item.path === path);
-    const marks = [file?.locked ? "locked" : "", file?.hidden ? "hidden" : "", file?.skipGithub ? "no git" : ""].filter(Boolean);
-    html += `<div class="file-row ${path === editorState.active ? "active" : ""}" draggable="true" data-path="${esc(path)}" style="padding-left:${depth * 12}px">
-      <button data-open="${esc(path)}">${esc(path.split("/").pop())}${marks.length ? `<i>${esc(marks.join(" · "))}</i>` : ""}</button>
-      <button data-rename="${esc(path)}" title="Rename">✎</button>
-      <button data-delete="${esc(path)}" title="Delete">×</button>
+    const badges = [file?.locked ? "Locked" : "", file?.hidden ? "Hidden" : "", file?.skipGithub ? "Off GitHub" : ""].filter(Boolean);
+    html += `<div class="tree-row file-row ${path === editorState.active ? "active" : ""}" draggable="true" data-path="${esc(path)}" style="--depth:${depth}" title="${esc(path)}">
+      <span class="twist"></span>${fileIcon(path)}<span class="tname">${esc(path.split("/").pop())}</span>${badges.map((mark) => `<span class="badge">${esc(mark)}</span>`).join("")}
     </div>`;
   }
   return html;
+}
+
+function cssAttr(value) {
+  return String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+}
+
+function fileIcon(path) {
+  const ext = String(path).split(".").pop().toLowerCase();
+  const color = { py: "#4b8bbe", java: "#e07a1f", c: "#8a8a8a", h: "#8a8a8a", cpp: "#e24a8d", cc: "#e24a8d", html: "#e34c26", css: "#7a4de0", js: "#f1e05a", mjs: "#f1e05a", json: "#f1e05a", md: "#6a9fb5", txt: "#cccccc" }[ext] || "#858585";
+  return `<svg class="ficon" viewBox="0 0 16 16" aria-hidden="true"><path fill="${color}" d="M3 1h7l3 3v11H3z"/><path fill="#1e1e1e" d="M10 1v3h3"/></svg>`;
+}
+
+function folderIcon(open) {
+  return `<svg class="ficon" viewBox="0 0 16 16" aria-hidden="true"><path fill="#dcb67a" d="${open ? "M1 4h5l1 2h8v8H1z" : "M1 3h5l1 2h8v2H1zm0 4h14v7H1z"}"/></svg>`;
+}
+
+function toggleFolder(folder) {
+  if (!editorState.collapsed) editorState.collapsed = new Set();
+  if (editorState.collapsed.has(folder)) editorState.collapsed.delete(folder);
+  else editorState.collapsed.add(folder);
+  treeSig = "";
+  renderExplorer();
+}
+
+function openTreeMenu(event) {
+  const row = event.target.closest("[data-path], [data-folder]");
+  event.preventDefault();
+  event.stopPropagation();
+  const path = row?.dataset.path || "";
+  const folder = path ? path.split("/").slice(0, -1).join("/") : (row?.dataset.folder || "");
+  const items = [];
+  if (path) {
+    items.push(
+      { id: "open", label: "Open", path },
+      { id: "rename", label: "Rename", path },
+      { id: "delete", label: "Delete", path },
+      { id: "copy", label: "Copy Path", path },
+    );
+  }
+  items.push(
+    { id: "new-file", label: "New File", folder },
+    { id: "new-folder", label: "New Folder", folder },
+  );
+  let menu = document.querySelector("#tree-menu");
+  if (!menu) {
+    menu = document.createElement("div");
+    menu.id = "tree-menu";
+    menu.className = "tree-menu";
+    document.body.appendChild(menu);
+  }
+  menu.innerHTML = items.map((item) => `<button type="button" data-act="${item.id}">${esc(item.label)}</button>`).join("");
+  menu.hidden = false;
+  menu.style.left = `${Math.min(event.clientX, window.innerWidth - 180)}px`;
+  menu.style.top = `${Math.min(event.clientY, window.innerHeight - 40 - items.length * 28)}px`;
+  menu.onclick = (click) => {
+    click.stopPropagation();
+    const act = click.target.dataset.act;
+    menu.hidden = true;
+    if (act === "open") openPath(path);
+    if (act === "rename") renamePath(path);
+    if (act === "delete") deletePath(path);
+    if (act === "copy") navigator.clipboard?.writeText(path).catch(() => {});
+    if (act === "new-file") askCreate(row || document.querySelector("#tree"), folder, "file.txt");
+    if (act === "new-folder") askCreate(row || document.querySelector("#tree"), folder, "folder", true);
+  };
 }
 
 let naming = false;
 
 function askCreate(parent, folder, placeholder, asFolder = false) {
   if (!parent || naming) return;
+  if (folder && editorState.collapsed?.has(folder)) {
+    editorState.collapsed.delete(folder);
+    treeSig = "";
+    renderExplorer();
+  }
+  const anchor = folder ? document.querySelector(`#tree [data-folder="${cssAttr(folder)}"]`) : parent;
+  if (!anchor) return;
   naming = true;
   const row = document.createElement("form");
   row.className = "inline-create";
+  row.style.setProperty("--depth", String(folder ? folder.split("/").length : 0));
   row.innerHTML = `<input aria-label="Name" placeholder="${esc(placeholder)}"><button type="submit">Add</button>`;
-  parent.prepend(row);
+  if (anchor.dataset?.folder || anchor.dataset?.path) anchor.after(row);
+  else anchor.prepend(row);
   const input = row.querySelector("input");
   input.focus();
   const finish = () => { naming = false; row.remove(); };
@@ -255,19 +372,17 @@ function askCreate(parent, folder, placeholder, asFolder = false) {
 }
 
 function bindTree(tree, tabs) {
-  for (const button of tree.querySelectorAll("[data-open]")) {
-    button.onclick = () => openPath(button.dataset.open);
-  }
-  for (const button of tree.querySelectorAll("[data-rename]")) {
-    button.onclick = (event) => {
-      event.stopPropagation();
-      renamePath(button.dataset.rename);
+  for (const row of tree.querySelectorAll("[data-path]")) {
+    row.onclick = () => openPath(row.dataset.path);
+    row.ondragstart = (event) => {
+      event.dataTransfer.setData("text/plain", row.dataset.path);
+      event.dataTransfer.effectAllowed = "move";
     };
   }
-  for (const button of tree.querySelectorAll("[data-delete]")) {
+  for (const button of tree.querySelectorAll("[data-twist]")) {
     button.onclick = (event) => {
       event.stopPropagation();
-      deletePath(button.dataset.delete);
+      toggleFolder(button.dataset.twist);
     };
   }
   for (const button of tree.querySelectorAll("[data-add]")) {
@@ -276,26 +391,26 @@ function bindTree(tree, tabs) {
       askCreate(button.parentElement, button.dataset.add, "file.txt");
     };
   }
-  for (const row of tree.querySelectorAll("[data-path]")) {
-    row.addEventListener("dragstart", (event) => {
-      event.dataTransfer.setData("text/plain", row.dataset.path);
-      event.dataTransfer.effectAllowed = "move";
-    });
-  }
   for (const folder of tree.querySelectorAll("[data-folder]")) {
-    folder.addEventListener("dragover", (event) => {
+    folder.onclick = (event) => {
+      if (event.target.closest("button")) return;
+      toggleFolder(folder.dataset.folder);
+    };
+    folder.ondragover = (event) => {
       event.preventDefault();
+      event.stopPropagation();
       folder.classList.add("drop");
-    });
-    folder.addEventListener("dragleave", () => folder.classList.remove("drop"));
-    folder.addEventListener("drop", (event) => {
+    };
+    folder.ondragleave = () => folder.classList.remove("drop");
+    folder.ondrop = (event) => {
       event.preventDefault();
+      event.stopPropagation();
       folder.classList.remove("drop");
       const from = event.dataTransfer.getData("text/plain");
       const name = from.split("/").pop();
       const to = folder.dataset.folder ? `${folder.dataset.folder}/${name}` : name;
       if (from && to && from !== to) movePath(from, to);
-    });
+    };
   }
   for (const button of tabs.querySelectorAll("[data-tab]")) {
     button.onclick = (event) => {
@@ -334,8 +449,7 @@ async function closeTab(path) {
 async function createPath(path) {
   if (!path) return;
   const data = await session.api(`/api/projects/${editorState.id}/files`, { method: "POST", body: { path } });
-  editorState.files = data.files;
-  editorState.project.revision = data.revision;
+  takeServerFiles(data.files, data.revision);
   if (!editorState.opened.includes(path)) editorState.opened.push(path);
   editorState.active = path;
   treeSig = "";
@@ -369,8 +483,7 @@ async function renamePath(from) {
 async function movePath(from, to) {
   await flush();
   const data = await session.api(`/api/projects/${editorState.id}/rename`, { method: "POST", body: { from, to } });
-  editorState.files = data.files;
-  editorState.project.revision = data.revision;
+  takeServerFiles(data.files, data.revision);
   editorState.opened = editorState.opened.map((path) => path === from ? to : path);
   if (editorState.active === from) editorState.active = to;
   treeSig = "";
@@ -381,8 +494,7 @@ async function deletePath(path) {
   if (!confirm(`Delete ${path}?`)) return;
   await flush();
   const data = await session.api(`/api/projects/${editorState.id}/files?path=${encodeURIComponent(path)}`, { method: "DELETE" });
-  editorState.files = data.files;
-  editorState.project.revision = data.revision;
+  takeServerFiles(data.files, data.revision);
   editorState.opened = editorState.opened.filter((item) => item !== path);
   if (editorState.active === path) editorState.active = editorState.opened.at(-1) || "";
   treeSig = "";
@@ -665,34 +777,55 @@ function scheduleSave() {
   saveTimer = setTimeout(() => { flush().catch(() => {}); }, 250);
 }
 
-async function flush() {
+async function flush(attempt = 0) {
   if (!editorState?.dirty) return;
+  if (editorState.saving && attempt === 0) {
+    scheduleSave();
+    return;
+  }
   const file = activeFile();
   if (!file) return;
   const content = currentContent();
   const gen = ++saveGeneration;
   const path = file.path;
-  file.content = content;
-  editorState.dirty = false;
+  const baseRevision = file.baseRevision ?? editorState.project.revision;
+  editorState.saving = true;
   setSaveState("Saving");
   try {
     const data = await session.api(`/api/projects/${editorState.id}/files`, {
       method: "PUT",
-      body: { path, content },
+      body: { path, content, baseRevision },
     });
     if (!editorState) return;
     editorState.project.revision = data.revision;
-    if (saveGeneration !== gen) {
+    file.content = content;
+    file.baseContent = content;
+    file.baseRevision = data.revision;
+    if (saveGeneration !== gen || currentContent() !== content) {
       editorState.dirty = true;
+      scheduleSave();
       return;
     }
+    editorState.dirty = false;
     setSaveState("Saved");
   } catch (err) {
-    if (editorState) {
+    if (!editorState) return;
+    if (err.status === 409 && typeof err.content === "string" && attempt < 2) {
+      const merged = mergeText(file.baseContent ?? "", content, err.content);
+      file.baseContent = err.content;
+      file.baseRevision = err.revision ?? file.baseRevision;
+      if (err.revision) editorState.project.revision = err.revision;
+      file.content = merged;
+      if (editorState.active === path) writeEditor(merged, true);
       editorState.dirty = true;
-      setSaveState(err.message);
+      editorState.saving = false;
+      await flush(attempt + 1);
+      return;
     }
-    throw err;
+    editorState.dirty = true;
+    setSaveState(err.message);
+  } finally {
+    if (editorState) editorState.saving = false;
   }
 }
 
@@ -704,20 +837,7 @@ async function poll() {
     try {
       const state = await session.api(`/api/projects/${token.id}/state?revision=${token.project.revision}&boardRevision=${token.project.boardRevision}`);
       paintViewers(state.viewers);
-      if (state.files && !token.dirty) {
-        const next = state.files.find((file) => file.path === token.active);
-        const same = !token.active || (next && next.content === currentContent());
-        token.files = state.files.filter((file) => !hidden(file.path));
-        token.project.revision = state.revision;
-        if (token.active && !token.files.some((file) => file.path === token.active)) {
-          token.opened = token.opened.filter((path) => token.files.some((file) => file.path === path));
-          token.active = token.opened.at(-1) || "";
-          if (token.active) writeEditor(fileContent(token.active), true);
-          else showWelcome();
-        } else if (!same && next) writeEditor(next.content, true);
-        renderExplorer();
-        if (token.active) showActiveFile(false);
-      }
+      if (state.files) adoptFiles(state.files, state.revision);
       if (state.controls) applyControls(state.controls);
       if (state.board) {
         token.boardDoc = state.board.slides ? state.board : { slides: [{ id: "s1", title: "Slide 1", strokes: [] }], index: 0 };
@@ -812,14 +932,14 @@ function paintTeach() {
   const files = visibleFiles();
   const selected = files.some((file) => file.path === editorState.active) ? editorState.active : (files[0]?.path || "");
   const file = files.find((item) => item.path === selected);
+  const card = (id, title, text, on) => `<div class="control-card"><div><strong>${title}</strong><p>${text}</p></div><input id="${id}" type="checkbox" aria-label="${title}" ${on ? "checked" : ""}></div>`;
   box.innerHTML = `<div class="explorer-head"><span>Teach</span></div>
-    <label>File<select id="teach-file">${files.map((item) => `<option ${item.path === selected ? "selected" : ""}>${esc(item.path)}</option>`).join("")}</select></label>
-    <label><input id="lock-file" type="checkbox" ${file?.locked ? "checked" : ""}> Lock student typing</label>
-    <label><input id="hide-file" type="checkbox" ${file?.hidden ? "checked" : ""}> Hide from student</label>
-    <label><input id="skip-file" type="checkbox" ${file?.skipGithub || file?.hidden ? "checked" : ""}> Keep off GitHub</label>
-    <label><input id="force-board" type="checkbox" ${editorState.controls?.forceBoard ? "checked" : ""}> Force whiteboard</label>
-    <label><input id="lock-draw" type="checkbox" ${editorState.controls?.lockDraw ? "checked" : ""}> Lock student drawing</label>
-    <p class="muted">Hidden files stay off GitHub, preview, and the student's screen.</p>`;
+    <label class="teach-pick">File this applies to<select id="teach-file">${files.map((item) => `<option ${item.path === selected ? "selected" : ""}>${esc(item.path)}</option>`).join("")}</select></label>
+    ${card("lock-file", "Lock typing", "The student can read this file, but cannot change it.", file?.locked)}
+    ${card("hide-file", "Hide from student", "Use this for answers. The student does not see the file.", file?.hidden)}
+    ${card("skip-file", "Keep off GitHub", "This file stays in the lesson and is not committed.", file?.skipGithub || file?.hidden)}
+    ${card("force-board", "Force the whiteboard", "Opens the board on the student's screen.", editorState.controls?.forceBoard)}
+    ${card("lock-draw", "Lock student drawing", "The student can see the board, but cannot draw or type on it.", editorState.controls?.lockDraw)}`;
   const pick = box.querySelector("#teach-file");
   if (pick) pick.onchange = () => { editorState.active = pick.value; paintTeach(); };
   const flag = (id, key) => {
@@ -836,9 +956,8 @@ function paintTeach() {
 
 async function setFileControl(path, patch) {
   const data = await session.api(`/api/projects/${editorState.id}/controls`, { method: "PATCH", body: { path, ...patch } });
-  editorState.files = data.files;
+  takeServerFiles(data.files, data.revision);
   editorState.controls = { ...editorState.controls, ...data.controls };
-  editorState.project.revision = data.revision;
   treeSig = "";
   renderExplorer();
   paintTeach();
@@ -1647,13 +1766,58 @@ function paintRemote(cursor) {
   editorState.remotes.set(cursor.id, { mark, sel, cursor });
 }
 
+function adoptFiles(nextFiles, revision) {
+  if (!editorState) return;
+  const old = new Map(editorState.files.map((file) => [file.path, file]));
+  editorState.files = nextFiles.filter((file) => !hidden(file.path)).map((file) => {
+    const prev = old.get(file.path);
+    const isActive = file.path === editorState.active;
+    const localText = isActive ? currentContent() : (prev?.content ?? file.content);
+    const dirty = isActive && (editorState.dirty || editorState.saving || localText !== (prev?.content ?? file.content));
+    const base = prev?.baseContent ?? prev?.content ?? file.content;
+    const merged = dirty ? mergeText(base, localText, file.content) : file.content;
+    return { ...file, content: merged, baseContent: file.content, baseRevision: revision };
+  });
+  editorState.project.revision = revision;
+  if (editorState.active && !editorState.files.some((file) => file.path === editorState.active)) {
+    editorState.opened = editorState.opened.filter((path) => editorState.files.some((file) => file.path === path));
+    editorState.active = editorState.opened.at(-1) || "";
+    if (editorState.active) writeEditor(fileContent(editorState.active), true);
+    else showWelcome();
+  } else if (editorState.active) {
+    const active = editorState.files.find((file) => file.path === editorState.active);
+    const shown = currentContent();
+    if (active && active.content !== shown) writeEditor(active.content, true);
+    if (active && active.content !== active.baseContent) {
+      editorState.dirty = true;
+      scheduleSave();
+    }
+  }
+  treeSig = "";
+  renderExplorer();
+}
+
 function applyRemoteFile(file) {
   if (!editorState || file.authorId === session.me.id || hidden(file.path)) return;
   const local = editorState.files.find((item) => item.path === file.path);
-  if (local) local.content = file.content;
-  else editorState.files.push({ path: file.path, content: file.content });
+  const isActive = file.path === editorState.active;
+  const localText = isActive ? currentContent() : (local?.content ?? file.content);
+  const dirty = isActive && (editorState.dirty || editorState.saving || localText !== (local?.content ?? ""));
+  const base = local?.baseContent ?? local?.content ?? file.content;
+  const next = dirty ? mergeText(base, localText, file.content) : file.content;
+  if (local) {
+    local.content = next;
+    local.baseContent = file.content;
+    local.baseRevision = file.revision;
+  } else {
+    editorState.files.push({ path: file.path, content: next, baseContent: file.content, baseRevision: file.revision });
+  }
   editorState.project.revision = file.revision;
-  if (file.path === editorState.active && !editorState.dirty) writeEditor(file.content, true);
+  if (isActive && next !== localText) writeEditor(next, true);
+  if (isActive && next !== file.content) {
+    editorState.dirty = true;
+    scheduleSave();
+  }
   treeSig = "";
   renderExplorer();
 }

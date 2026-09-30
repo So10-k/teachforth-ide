@@ -750,10 +750,20 @@ async function saveFile(req, res, user, project) {
   const content = String(body.content ?? "");
   if (content.length > 200_000) fail(413, "That file is too large for this pilot");
   const now = new Date().toISOString();
-  const existing = db.prepare("SELECT id FROM files WHERE project_id = ? AND path = ?").get(project.id, path);
+  const existing = db.prepare("SELECT id, content FROM files WHERE project_id = ? AND path = ?").get(project.id, path);
   if (!existing) fail(404, "File not found");
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
+    const fresh = db.prepare("SELECT revision FROM projects WHERE id = ?").get(project.id);
+    if (body.baseRevision !== undefined && Number(body.baseRevision) !== fresh.revision) {
+      const current = db.prepare("SELECT content FROM files WHERE project_id = ? AND path = ?").get(project.id, path);
+      db.exec("ROLLBACK");
+      return send(res, 409, {
+        error: "Someone else saved this file",
+        content: current?.content ?? "",
+        revision: fresh.revision,
+      });
+    }
     db.prepare("UPDATE files SET content = ?, updated_at = ? WHERE project_id = ? AND path = ?").run(content, now, project.id, path);
     db.prepare("UPDATE projects SET revision = revision + 1, updated_at = ? WHERE id = ?").run(now, project.id);
     recordRevision(db, project.id, path, content, user.id);
@@ -860,8 +870,12 @@ async function boardStroke(req, res, user, project) {
     doc.index = Math.max(0, Math.min(doc.index, doc.slides.length - 1));
   } else if (body.action === "clear") {
     slide.strokes = [];
+  } else if (body.action === "delete-stroke") {
+    const strokeId = String(body.strokeId || "");
+    slide.strokes = slide.strokes.filter((item) => item.id !== strokeId);
   } else if (body.stroke) {
     const stroke = cleanStroke(body.stroke);
+    if (!stroke) return send(res, 413, { error: "That image is too large" });
     const at = slide.strokes.findIndex((item) => item.id === stroke.id);
     if (at >= 0) slide.strokes[at] = stroke;
     else slide.strokes.push(stroke);
@@ -897,24 +911,53 @@ function normalizeBoard(raw) {
     ? data.slides.slice(0, 24).map((slide, index) => ({
       id: String(slide.id || `s${index + 1}`).slice(0, 16),
       title: String(slide.title || `Slide ${index + 1}`).slice(0, 40),
-      strokes: Array.isArray(slide.strokes) ? slide.strokes.slice(-800).map(cleanStroke) : [],
+      strokes: Array.isArray(slide.strokes) ? slide.strokes.slice(-800).map(cleanStroke).filter(Boolean) : [],
     }))
     : [{ id: "s1", title: "Slide 1", strokes: [] }];
   return { slides, index: Math.max(0, Math.min(slides.length - 1, Number(data?.index) || 0)) };
 }
 
 function cleanStroke(stroke) {
-  const points = Array.isArray(stroke?.points) ? stroke.points.slice(-600).map((pt) => ({
-    x: Math.max(0, Math.min(1, Number(pt.x) || 0)),
-    y: Math.max(0, Math.min(1, Number(pt.y) || 0)),
-  })) : [];
-  return {
+  const tool = ["pen", "marker", "highlighter", "eraser", "text", "image"].includes(stroke?.tool) ? stroke.tool : "pen";
+  const base = {
     id: String(stroke?.id || newId()).slice(0, 24),
-    tool: ["pen", "marker", "highlighter", "eraser"].includes(stroke?.tool) ? stroke.tool : "pen",
+    tool,
     color: /^#[0-9a-fA-F]{6}$/.test(stroke?.color || "") ? stroke.color : "#3b6ef6",
     size: Math.max(1, Math.min(48, Number(stroke?.size) || 3)),
-    points,
   };
+  if (tool === "text") {
+    return {
+      ...base,
+      points: [],
+      x: unit(stroke?.x),
+      y: unit(stroke?.y),
+      w: Math.max(0.08, Math.min(0.8, Number(stroke?.w) || 0.28)),
+      h: Math.max(0.04, Math.min(0.5, Number(stroke?.h) || 0.08)),
+      text: String(stroke?.text || "").slice(0, 4000),
+    };
+  }
+  if (tool === "image") {
+    const src = String(stroke?.src || "");
+    if (!src.startsWith("data:image/") || src.length > 180000) return null;
+    return {
+      ...base,
+      points: [],
+      x: unit(stroke?.x),
+      y: unit(stroke?.y),
+      w: Math.max(0.08, Math.min(0.9, Number(stroke?.w) || 0.32)),
+      h: Math.max(0.08, Math.min(0.9, Number(stroke?.h) || 0.24)),
+      src,
+    };
+  }
+  const points = Array.isArray(stroke?.points) ? stroke.points.slice(-600).map((pt) => ({
+    x: unit(pt.x),
+    y: unit(pt.y),
+  })) : [];
+  return { ...base, points };
+}
+
+function unit(value) {
+  return Math.max(0, Math.min(1, Number(value) || 0));
 }
 
 function liveEvents(req, res, user, id) {
