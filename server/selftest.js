@@ -1,4 +1,6 @@
 import { displayTitle, isTeachforthRepo, parseTeachforthCode, repoNameFor, teachforthMarker, visibleStudentProject } from "./github.js";
+import { planSteps } from "./sandbox.js";
+import { rewriteHtml } from "./preview-site.js";
 import { runJava } from "../public/java-lang.js";
 import { publicSlug, siteFiles } from "./publish.js";
 import { spawn } from "node:child_process";
@@ -45,6 +47,11 @@ const snap = siteFiles([
 ]);
 assert(snap.ok && snap.files["index.html"] && !snap.files[".teachforth"] && !snap.files["app.py"], "publish snapshot");
 assert(publicSlug({ id: 4, title: "{TeachForth} Hello Page" }) === "p4-hello-page", "slug");
+const javaPlan = planSteps("java", "Main.java", 'public class Main { public static void main(String[] args) { System.out.println("hi".trim()); } }');
+assert(javaPlan.steps[0][0] === "javac" && javaPlan.steps[1][0] === "java" && javaPlan.steps[1].at(-1) === "Main" && javaPlan.steps[1].includes("-Xmx128m"), "java plan uses the real compiler");
+assert(planSteps("c", "main.c").steps[0][0] === "gcc" && planSteps("cpp", "main.cpp").steps[0][0] === "g++", "c and c++ plans");
+const rewritten = rewriteHtml('<a href="/about.html"></a><script src="script.js"></script>', "abc", { script: true, style: true });
+assert(rewritten.includes("/preview-site/abc/about.html") && rewritten.includes('src="script.js"') && rewritten.includes("style.css"), "preview rewrites root links and keeps script.js");
 
 try {
   await waitForHealth();
@@ -355,6 +362,51 @@ try {
   await send(`/api/runtime/runs/${run.runId}`, { method: "DELETE", cookie: student.cookie });
   const ended = await send(`/api/runtime/stdin?run=${run.runId}`, { cookie: student.cookie });
   assert(ended.eof === true, "stopped program gets end of input");
+
+  const preview = await send(`/api/projects/${page.id}/preview`, { method: "POST", cookie: teacher.cookie, body: {} });
+  const previewRes = await fetch(`${base}/preview-site/${preview.token}/index.html`);
+  const previewHtml = await previewRes.text();
+  assert(previewRes.headers.get("content-security-policy") === "sandbox allow-scripts", "preview stays sandboxed");
+  assert(previewHtml.includes("script.js") && !previewHtml.includes(".teachforth"), "preview can load script.js");
+  const locked = await send(`/api/projects/${page.id}/controls`, {
+    method: "PATCH",
+    cookie: teacher.cookie,
+    body: { path: "index.html", locked: true, hidden: true },
+  });
+  assert(locked.files.some((file) => file.path === "index.html" && file.hidden && file.locked), "teacher can hide and lock a file");
+  const studentView = await send(`/api/projects/${page.id}`, { cookie: student.cookie });
+  assert(!studentView.files.some((file) => file.path === "index.html"), "student cannot see a hidden file");
+  assert(!studentView.controls.teacher && !studentView.controls.lead, "student has no control panels");
+  const studentWrite = await send(`/api/projects/${page.id}/files`, {
+    method: "PUT",
+    cookie: student.cookie,
+    body: { path: "index.html", content: "nope" },
+    ok: false,
+  });
+  assert(studentWrite.status === 404, "hidden file is not revealed to the student");
+  const teacherLead = await send(`/api/projects/${page.id}/lead`, { cookie: teacher.cookie, ok: false });
+  assert(teacherLead.status === 403, "paired teacher is not a session lead");
+  const leadView = await send(`/api/projects/${page.id}/lead`, { cookie: lead.cookie });
+  assert(Array.isArray(leadView.issues), "lead can inspect the GitHub link");
+  const teacherCommit = await send(`/api/projects/${page.id}/commit`, { method: "POST", cookie: teacher.cookie, ok: false });
+  assert(teacherCommit.status === 403, "paired teacher cannot force a commit");
+  const leadCommit = await send(`/api/projects/${page.id}/commit`, { method: "POST", cookie: lead.cookie, ok: false });
+  assert(leadCommit.status === 400, "lead commit is allowed and stops at GitHub");
+  const hiddenPreview = await fetch(`${base}/preview-site/${preview.token}/index.html`);
+  assert(hiddenPreview.status === 404, "hidden page is not served");
+  const pyRun = await send(`/api/projects/${py.project.id}/exec`, {
+    method: "POST",
+    cookie: teacher.cookie,
+    body: { kind: "python", file: "main.py" },
+  });
+  let pyText = "";
+  for (let i = 0; i < 30 && !pyText.includes("Hello"); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const chunk = await send(`/api/runtime/output?run=${pyRun.runId}&offset=0`, { cookie: teacher.cookie });
+    pyText = chunk.text || "";
+    if (chunk.done) break;
+  }
+  assert(pyText.includes("Hello from TeachForth"), "python runs in the server sandbox");
 
   console.log("selftest ok");
   console.log("outsider blocked", outsider.user.email);

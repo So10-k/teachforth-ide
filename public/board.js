@@ -1,6 +1,6 @@
 const COLORS = ["#1d2440", "#3b6ef6", "#e24a8d", "#1aa37a", "#e07a1f", "#7a4de0", "#d13b3b", "#f2c14e"];
 
-export function openBoard({ state, api, publish }) {
+export function openBoard({ state, api, publish, canDraw }) {
   closeBoard();
   const root = document.createElement("div");
   root.className = "board-app";
@@ -96,7 +96,9 @@ export function openBoard({ state, api, publish }) {
       y: Math.max(0, Math.min(1, (event.clientY - box.top) / box.height)),
     };
   }
+  const allowed = () => !canDraw || canDraw();
   canvas.addEventListener("pointerdown", (event) => {
+    if (!allowed()) return;
     canvas.setPointerCapture(event.pointerId);
     drawing = {
       id: Math.random().toString(36).slice(2, 10),
@@ -130,9 +132,10 @@ export function openBoard({ state, api, publish }) {
     else root.requestFullscreen?.();
   };
   root.querySelector("#add-slide").onclick = () => {
-    publish({ action: "add-slide" });
+    if (allowed()) publish({ action: "add-slide" });
   };
   root.querySelector("#clear-slide").onclick = () => {
+    if (!allowed()) return;
     slide().strokes = [];
     publish({ action: "clear", slideId: slide().id });
     paint();

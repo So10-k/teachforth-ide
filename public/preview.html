@@ -23,8 +23,6 @@
     <p id="gate-error" class="error"></p>
   </form>
   <script type="module">
-    import { previewDocument } from "/preview-doc.js";
-
     const id = location.pathname.split("/").filter(Boolean)[1];
     const frame = document.querySelector("#preview");
     const gate = document.querySelector("#gate");
@@ -50,11 +48,6 @@
       location.reload();
     });
 
-    window.addEventListener("message", (event) => {
-      if (event.source !== frame.contentWindow || event.data?.type !== "tf-nav") return;
-      show(event.data.href);
-    });
-
     boot();
 
     async function boot() {
@@ -71,16 +64,26 @@
         status.textContent = data.error || "Cannot open this preview";
         return;
       }
-      files = data.files || [];
       document.querySelector("#title").textContent = data.project?.title || "Preview";
+      const minted = await fetch(`/api/projects/${id}/preview`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const tokenData = await minted.json().catch(() => ({}));
+      if (!minted.ok) {
+        status.textContent = tokenData.error || "Cannot open this preview";
+        return;
+      }
       frame.hidden = false;
-      show(new URLSearchParams(location.search).get("file") || "index.html");
+      show(new URLSearchParams(location.search).get("file") || "index.html", tokenData.token);
     }
 
-    function show(entry) {
+    function show(entry, token) {
       const clean = String(entry || "index.html").replace(/^\.\//, "").split(/[?#]/)[0];
       if (!clean || clean.includes("..") || clean.startsWith("/")) return;
-      frame.srcdoc = previewDocument(files, clean);
+      frame.src = `/preview-site/${token}/${clean}`;
       const next = new URL(location.href);
       next.searchParams.set("file", clean);
       history.replaceState(null, "", next);

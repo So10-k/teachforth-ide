@@ -54,6 +54,8 @@ export async function openEditor({ app, id, me, api, esc }) {
     boardDoc: null,
     remotes: new Map(),
     source: null,
+    controls: opened.controls || {},
+    seenForce: 0,
   };
   treeSig = "";
   const teacher = me.role !== "student";
@@ -70,14 +72,22 @@ export async function openEditor({ app, id, me, api, esc }) {
       <button id="export">Export</button>
       <button id="back">Back</button>
     </header>
-    ${teacher ? `<div class="banner">You are in ${esc(opened.project.ownerName)}'s project. This visit is logged. Only the student can commit it to GitHub.</div>` : ""}
+    ${teacher ? `<div class="banner">You are in ${esc(opened.project.ownerName)}'s project. This visit is logged. A session lead can force a commit, and that name is saved in the message.</div>` : ""}
     ${!teacher && opened.project.kind === "github" ? `<div class="banner">Closing this project commits to your GitHub and removes the code from TeachForth.</div>` : ""}
     <div class="ide-body">
-      <nav class="activity" aria-label="Views"><button class="on" title="Explorer">Files</button></nav>
+      <nav class="activity" aria-label="Views">
+        <button class="on" data-view="files" title="Explorer">Files</button>
+        ${editorState.controls.teacher ? `<button data-view="teach" title="Teacher controls">Teach</button>` : ""}
+        ${editorState.controls.lead ? `<button data-view="lead" title="Session lead">Lead</button>` : ""}
+      </nav>
       <aside class="explorer">
-        <div class="explorer-head"><span>Explorer</span><span class="explorer-actions"><button id="new-file" title="New file">+ File</button><button id="new-folder" title="New folder">+ Folder</button></span></div>
-        <p class="explorer-project">${esc(opened.project.title)}</p>
-        <div id="tree"></div>
+        <div id="view-files">
+          <div class="explorer-head"><span>Explorer</span><span class="explorer-actions"><button id="new-file" title="New file">+ File</button><button id="new-folder" title="New folder">+ Folder</button></span></div>
+          <p class="explorer-project">${esc(opened.project.title)}</p>
+          <div id="tree" data-folder=""></div>
+        </div>
+        <div id="view-teach" class="side-panel" hidden></div>
+        <div id="view-lead" class="side-panel" hidden></div>
       </aside>
       <div class="editor-pane">
         <div class="tabs-files" id="file-tabs"></div>
@@ -114,11 +124,11 @@ export async function openEditor({ app, id, me, api, esc }) {
   if (teacher) document.querySelector("#publish").onclick = publishSite;
   document.querySelector("#export").onclick = () => { location.href = `/api/projects/${id}/export.zip`; };
   document.querySelector("#board-btn").onclick = () => openLiveBoard();
-  document.querySelector("#new-file").onclick = () => createPath(prompt("File name, like notes.txt or src/app.js"));
-  document.querySelector("#new-folder").onclick = () => {
-    const name = prompt("Folder name, like src");
-    if (name) createPath(`${name.replace(/\/+$/, "")}/untitled.txt`);
-  };
+  document.querySelector("#new-file").onclick = () => askCreate(document.querySelector("#tree"), "", "notes.txt");
+  document.querySelector("#new-folder").onclick = () => askCreate(document.querySelector("#tree"), "", "src", true);
+  for (const button of document.querySelectorAll(".activity button")) {
+    button.onclick = () => switchView(button.dataset.view);
+  }
   if (teacher) document.querySelector("#report-btn").onclick = () => { location.hash = `#/person/${opened.project.ownerId}/reports`; };
   const guideBtn = document.querySelector("#guide-btn");
   if (guideBtn) guideBtn.onclick = () => toggleGuide();
@@ -128,6 +138,7 @@ export async function openEditor({ app, id, me, api, esc }) {
   if (first) showActiveFile(false);
   else showWelcome();
   welcomeTerm();
+  applyControls(editorState.controls);
   poll();
 }
 
@@ -164,7 +175,7 @@ function renderExplorer() {
   const tree = document.querySelector("#tree");
   const tabs = document.querySelector("#file-tabs");
   if (!tree || !tabs) return;
-  if (sig !== treeSig) {
+  if (sig !== treeSig && !naming) {
     treeSig = sig;
     tree.innerHTML = files.length ? treeHtml(files) : `<p class="muted tree-empty">No files yet.</p>`;
     tabs.innerHTML = editorState.opened.map((path) =>
@@ -201,19 +212,46 @@ function treeHtml(files) {
   return nodeHtml(root, 0);
 }
 
-function nodeHtml(node, depth) {
+function nodeHtml(node, depth, prefix = "") {
   let html = "";
   for (const [name, child] of node.dirs) {
-    html += `<div class="folder" style="padding-left:${depth * 12}px">${esc(name)}</div>${nodeHtml(child, depth + 1)}`;
+    const folder = prefix ? `${prefix}/${name}` : name;
+    html += `<div class="folder" data-folder="${esc(folder)}" style="padding-left:${depth * 12}px"><span>${esc(name)}</span><button data-add="${esc(folder)}" title="New file in ${esc(folder)}">+</button></div>${nodeHtml(child, depth + 1, folder)}`;
   }
   for (const path of node.files) {
-    html += `<div class="file-row ${path === editorState.active ? "active" : ""}" style="padding-left:${depth * 12}px">
-      <button data-open="${esc(path)}">${esc(path.split("/").pop())}</button>
-      <button data-rename="${esc(path)}" title="Rename">Rename</button>
-      <button data-delete="${esc(path)}" title="Delete">Delete</button>
+    const file = editorState.files.find((item) => item.path === path);
+    const marks = [file?.locked ? "locked" : "", file?.hidden ? "hidden" : "", file?.skipGithub ? "no git" : ""].filter(Boolean);
+    html += `<div class="file-row ${path === editorState.active ? "active" : ""}" draggable="true" data-path="${esc(path)}" style="padding-left:${depth * 12}px">
+      <button data-open="${esc(path)}">${esc(path.split("/").pop())}${marks.length ? `<i>${esc(marks.join(" · "))}</i>` : ""}</button>
+      <button data-rename="${esc(path)}" title="Rename">✎</button>
+      <button data-delete="${esc(path)}" title="Delete">×</button>
     </div>`;
   }
   return html;
+}
+
+let naming = false;
+
+function askCreate(parent, folder, placeholder, asFolder = false) {
+  if (!parent || naming) return;
+  naming = true;
+  const row = document.createElement("form");
+  row.className = "inline-create";
+  row.innerHTML = `<input aria-label="Name" placeholder="${esc(placeholder)}"><button type="submit">Add</button>`;
+  parent.prepend(row);
+  const input = row.querySelector("input");
+  input.focus();
+  const finish = () => { naming = false; row.remove(); };
+  row.onsubmit = (event) => {
+    event.preventDefault();
+    const name = input.value.trim().replace(/^\/+|\/+$/g, "");
+    finish();
+    if (!name) return;
+    const path = folder ? `${folder}/${name}` : name;
+    createPath(asFolder ? `${path}/untitled.txt` : path).catch((err) => setSaveState(err.message));
+  };
+  input.onkeydown = (event) => { if (event.key === "Escape") finish(); };
+  input.onblur = () => setTimeout(finish, 150);
 }
 
 function bindTree(tree, tabs) {
@@ -231,6 +269,33 @@ function bindTree(tree, tabs) {
       event.stopPropagation();
       deletePath(button.dataset.delete);
     };
+  }
+  for (const button of tree.querySelectorAll("[data-add]")) {
+    button.onclick = (event) => {
+      event.stopPropagation();
+      askCreate(button.parentElement, button.dataset.add, "file.txt");
+    };
+  }
+  for (const row of tree.querySelectorAll("[data-path]")) {
+    row.addEventListener("dragstart", (event) => {
+      event.dataTransfer.setData("text/plain", row.dataset.path);
+      event.dataTransfer.effectAllowed = "move";
+    });
+  }
+  for (const folder of tree.querySelectorAll("[data-folder]")) {
+    folder.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      folder.classList.add("drop");
+    });
+    folder.addEventListener("dragleave", () => folder.classList.remove("drop"));
+    folder.addEventListener("drop", (event) => {
+      event.preventDefault();
+      folder.classList.remove("drop");
+      const from = event.dataTransfer.getData("text/plain");
+      const name = from.split("/").pop();
+      const to = folder.dataset.folder ? `${folder.dataset.folder}/${name}` : name;
+      if (from && to && from !== to) movePath(from, to);
+    });
   }
   for (const button of tabs.querySelectorAll("[data-tab]")) {
     button.onclick = (event) => {
@@ -279,8 +344,29 @@ async function createPath(path) {
 }
 
 async function renamePath(from) {
-  const to = prompt("New name", from);
-  if (!to || to === from) return;
+  const row = document.querySelector(`[data-path="${CSS.escape(from)}"]`);
+  if (!row || naming) return;
+  naming = true;
+  const input = document.createElement("input");
+  input.value = from;
+  input.className = "inline-name";
+  row.replaceChildren(input);
+  input.focus();
+  input.select();
+  const finish = () => { naming = false; treeSig = ""; renderExplorer(); };
+  input.onkeydown = async (event) => {
+    if (event.key === "Escape") return finish();
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const to = input.value.trim();
+    naming = false;
+    if (!to || to === from) return finish();
+    await movePath(from, to);
+  };
+  input.onblur = () => setTimeout(() => { if (naming) finish(); }, 150);
+}
+
+async function movePath(from, to) {
   await flush();
   const data = await session.api(`/api/projects/${editorState.id}/rename`, { method: "POST", body: { from, to } });
   editorState.files = data.files;
@@ -375,14 +461,14 @@ function showActiveFile(focus) {
   const value = activeFile()?.content || "";
   if (cmEditor) {
     cmEditor.setOption("mode", modeOf(editorState.active));
-    cmEditor.setOption("readOnly", false);
+    cmEditor.setOption("readOnly", fileLocked());
     writeEditor(value, false);
     if (focus) cmEditor.focus();
   } else {
     const area = document.querySelector("#code");
     if (area) {
       area.value = value;
-      area.readOnly = false;
+      area.readOnly = fileLocked();
       if (focus) area.focus();
     }
   }
@@ -623,9 +709,16 @@ async function poll() {
         const same = !token.active || (next && next.content === currentContent());
         token.files = state.files.filter((file) => !hidden(file.path));
         token.project.revision = state.revision;
-        if (!same && next) writeEditor(next.content, true);
+        if (token.active && !token.files.some((file) => file.path === token.active)) {
+          token.opened = token.opened.filter((path) => token.files.some((file) => file.path === path));
+          token.active = token.opened.at(-1) || "";
+          if (token.active) writeEditor(fileContent(token.active), true);
+          else showWelcome();
+        } else if (!same && next) writeEditor(next.content, true);
         renderExplorer();
+        if (token.active) showActiveFile(false);
       }
+      if (state.controls) applyControls(state.controls);
       if (state.board) {
         token.boardDoc = state.board.slides ? state.board : { slides: [{ id: "s1", title: "Slide 1", strokes: [] }], index: 0 };
         token.project.boardRevision = state.boardRevision;
@@ -691,7 +784,184 @@ function welcomeTerm() {
   }
   setShellPrompt();
   termLine("Type a command, or press ▶ to run the open file.", "muted");
-  termLine("help lists commands. Ctrl+C stops a program. input() reads this line.", "muted");
+  termLine("Python, Java, C, C++, and Node run in a sandbox on the server.", "muted");
+}
+
+function fileLocked() {
+  const file = activeFile();
+  return Boolean(file?.locked && session?.me?.role === "student");
+}
+
+function switchView(name) {
+  for (const button of document.querySelectorAll(".activity button")) {
+    button.classList.toggle("on", button.dataset.view === name);
+  }
+  const files = document.querySelector("#view-files");
+  const teach = document.querySelector("#view-teach");
+  const lead = document.querySelector("#view-lead");
+  if (files) files.hidden = name !== "files";
+  if (teach) teach.hidden = name !== "teach";
+  if (lead) lead.hidden = name !== "lead";
+  if (name === "teach") paintTeach();
+  if (name === "lead") paintLead();
+}
+
+function paintTeach() {
+  const box = document.querySelector("#view-teach");
+  if (!box || !editorState) return;
+  const files = visibleFiles();
+  const selected = files.some((file) => file.path === editorState.active) ? editorState.active : (files[0]?.path || "");
+  const file = files.find((item) => item.path === selected);
+  box.innerHTML = `<div class="explorer-head"><span>Teach</span></div>
+    <label>File<select id="teach-file">${files.map((item) => `<option ${item.path === selected ? "selected" : ""}>${esc(item.path)}</option>`).join("")}</select></label>
+    <label><input id="lock-file" type="checkbox" ${file?.locked ? "checked" : ""}> Lock student typing</label>
+    <label><input id="hide-file" type="checkbox" ${file?.hidden ? "checked" : ""}> Hide from student</label>
+    <label><input id="skip-file" type="checkbox" ${file?.skipGithub || file?.hidden ? "checked" : ""}> Keep off GitHub</label>
+    <label><input id="force-board" type="checkbox" ${editorState.controls?.forceBoard ? "checked" : ""}> Force whiteboard</label>
+    <label><input id="lock-draw" type="checkbox" ${editorState.controls?.lockDraw ? "checked" : ""}> Lock student drawing</label>
+    <p class="muted">Hidden files stay off GitHub, preview, and the student's screen.</p>`;
+  const pick = box.querySelector("#teach-file");
+  if (pick) pick.onchange = () => { editorState.active = pick.value; paintTeach(); };
+  const flag = (id, key) => {
+    const input = box.querySelector(id);
+    if (!input || !pick?.value) return;
+    input.onchange = () => setFileControl(pick.value, { [key]: input.checked }).catch((err) => setSaveState(err.message));
+  };
+  flag("#lock-file", "locked");
+  flag("#hide-file", "hidden");
+  flag("#skip-file", "skipGithub");
+  box.querySelector("#force-board").onchange = (event) => setBoardControl({ forceBoard: event.target.checked });
+  box.querySelector("#lock-draw").onchange = (event) => setBoardControl({ lockDraw: event.target.checked });
+}
+
+async function setFileControl(path, patch) {
+  const data = await session.api(`/api/projects/${editorState.id}/controls`, { method: "PATCH", body: { path, ...patch } });
+  editorState.files = data.files;
+  editorState.controls = { ...editorState.controls, ...data.controls };
+  editorState.project.revision = data.revision;
+  treeSig = "";
+  renderExplorer();
+  paintTeach();
+}
+
+async function setBoardControl(patch) {
+  const data = await session.api(`/api/projects/${editorState.id}/controls`, { method: "PATCH", body: patch });
+  applyControls(data.controls);
+}
+
+async function paintLead() {
+  const box = document.querySelector("#view-lead");
+  if (!box || !editorState) return;
+  box.innerHTML = `<div class="explorer-head"><span>Lead</span></div><p class="muted">Checking GitHub…</p>`;
+  let data = { issues: ["Could not check GitHub."], githubRepo: editorState.project.githubRepo || "" };
+  try { data = await session.api(`/api/projects/${editorState.id}/lead`); } catch (err) { data.issues = [err.message]; }
+  box.innerHTML = `<div class="explorer-head"><span>Lead</span></div>
+    <p>${esc(data.githubRepo || "No repository")}</p>
+    <p class="muted">${esc(data.githubUrl || "")}</p>
+    ${(data.issues || []).map((issue) => `<p class="error">${esc(issue)}</p>`).join("") || `<p class="muted">No mismatch found.</p>`}
+    <button id="force-commit" type="button">Force commit</button>
+    <label>Project name<input id="lead-title" value="${esc(editorState.project.title)}"></label>
+    <label><input id="rename-repo" type="checkbox"> Rename the GitHub repository too</label>
+    <button id="save-title" type="button">Save name</button>
+    <label>GitHub repo<input id="lead-repo" placeholder="student/TeachForth-name" value="${esc(data.githubRepo || "")}"></label>
+    <button id="save-repo" type="button">Relink</button>`;
+  box.querySelector("#force-commit").onclick = async () => {
+    try {
+      const saved = await session.api(`/api/projects/${editorState.id}/commit`, { method: "POST", body: {} });
+      setSaveState(`Committed ${saved.sha?.slice(0, 7) || ""}`);
+      paintLead();
+    } catch (err) { setSaveState(err.message); }
+  };
+  box.querySelector("#save-title").onclick = () => saveLead({
+    title: box.querySelector("#lead-title").value,
+    renameRepo: box.querySelector("#rename-repo").checked,
+  });
+  box.querySelector("#save-repo").onclick = () => saveLead({ githubRepo: box.querySelector("#lead-repo").value });
+}
+
+async function saveLead(body) {
+  try {
+    const data = await session.api(`/api/projects/${editorState.id}/admin`, { method: "PATCH", body });
+    if (data.project) editorState.project = { ...editorState.project, ...data.project };
+    const title = document.querySelector(".ide-titlebar .title");
+    if (title) title.textContent = editorState.project.title;
+    setSaveState("Saved");
+    paintLead();
+  } catch (err) { setSaveState(err.message); }
+}
+
+function applyControls(controls) {
+  if (!editorState || !controls) return;
+  editorState.controls = { ...editorState.controls, ...controls };
+  if (cmEditor) cmEditor.setOption("readOnly", fileLocked() || !editorState.active);
+  const area = document.querySelector("#code");
+  if (area) area.readOnly = fileLocked();
+  if (controls.forceBoard && controls.forceSeq && controls.forceSeq !== editorState.seenForce && session?.me?.role === "student") {
+    editorState.seenForce = controls.forceSeq;
+    openLiveBoard();
+  }
+}
+
+async function runServer(kind, path) {
+  let file = path || "";
+  if (file) {
+    const found = resolveFile(file);
+    if (found.error) {
+      termLine(found.error, "err");
+      return;
+    }
+    file = found.path;
+  }
+  const runKind = kind === "c" && /\.(cpp|cc|cxx)$/.test(file) ? "cpp" : kind;
+  let started;
+  try {
+    started = await session.api(`/api/projects/${editorState.id}/exec`, { method: "POST", body: { kind: runKind, file } });
+  } catch (err) {
+    termLine(err.message || "Could not start", "err");
+    return;
+  }
+  if (!editorState) return;
+  const gen = runGen;
+  activeRun = { id: started.runId, gen, kind: runKind, offset: 0 };
+  pendingOut = "";
+  pendingKind = "";
+  runOutput = "";
+  inputMode = "program";
+  setRunning(true);
+  const input = document.querySelector("#term-input");
+  if (input) input.placeholder = "running… type input and press Enter";
+  pollRun();
+}
+
+async function pollRun() {
+  const run = activeRun;
+  if (!run || run.gen !== runGen) return;
+  try {
+    const data = await session.api(`/api/runtime/output?run=${encodeURIComponent(run.id)}&offset=${run.offset || 0}`);
+    if (!activeRun || activeRun.gen !== run.gen) return;
+    if (data.text) appendOut(data.text, "");
+    run.offset = data.offset;
+    if (!data.done && pendingOut) {
+      const span = document.querySelector("#term-prompt");
+      if (span) {
+        span.className = "live";
+        span.textContent = pendingOut;
+      }
+    }
+    if (data.done) {
+      flushPending();
+      termLine(data.exit ? `exited ${data.exit}` : "exited", data.exit ? "err" : "muted");
+      finishRun();
+      return;
+    }
+  } catch (err) {
+    if (activeRun?.gen === run.gen) {
+      termLine(err.message || "Lost the program", "err");
+      finishRun();
+    }
+    return;
+  }
+  setTimeout(pollRun, 200);
 }
 
 async function play() {
@@ -983,11 +1253,12 @@ async function onTermSubmit(event) {
   const line = input.value;
   input.value = "";
   historyDraft = "";
-  if (waitingInput && activeRun?.id) {
+  if (activeRun?.id && inputMode === "program") {
     waitingInput = false;
     const prefix = document.querySelector("#term-prompt").textContent || "";
     termLine(prefix + line);
     document.querySelector("#term-prompt").textContent = "";
+    pendingOut = "";
     input.placeholder = "running…";
     try {
       await session.api("/api/runtime/stdin", { method: "POST", body: { run: activeRun.id, line } });
@@ -1069,9 +1340,9 @@ async function dispatch(plan) {
   if (plan.kind === "help") {
     termLine("python [file]      run a Python file, or open a prompt");
     termLine("node <file>        run a JavaScript file");
-    termLine("gcc <file>         run a C file in the browser");
-    termLine("g++ <file>         run a C++ file in the browser");
-    termLine("java <file>        run a Java file in the browser");
+    termLine("gcc <file>         compile and run a C file on the server");
+    termLine("g++ <file>         compile and run a C++ file on the server");
+    termLine("java <file>        compile and run a Java file on the server");
     termLine("ls                 list project files");
     termLine("cat <file>         print a file");
     termLine("teachforth serve   open the private preview");
@@ -1088,10 +1359,10 @@ async function dispatch(plan) {
     termLine("Type help for the commands this terminal can run.", "muted");
     return;
   }
-  if (plan.kind === "python") return runPython(plan.file, plan.argv || []);
-  if (plan.kind === "c") return runNative("c", plan.file);
-  if (plan.kind === "java") return runNative("java", plan.file);
-  if (plan.kind === "node") return runJs(plan.file, ["node", plan.file, ...(plan.argv || [])]);
+  if (plan.kind === "python") return runServer("python", plan.file);
+  if (plan.kind === "c") return runServer("c", plan.file);
+  if (plan.kind === "java") return runServer("java", plan.file);
+  if (plan.kind === "node") return runServer("node", plan.file);
   if (plan.kind === "markdown") return previewMarkdown(plan.file);
   if (plan.kind === "web") return serveWeb(plan);
   if (plan.kind === "next") return explainNext();
@@ -1315,6 +1586,7 @@ async function openLiveBoard() {
   openBoard({
     state: editorState,
     api: session.api,
+    canDraw: () => !(editorState.controls?.lockDraw && session.me.role === "student"),
     publish: (body) => session.api(`/api/projects/${editorState.id}/board/stroke`, { method: "POST", body }).then((data) => {
       editorState.boardDoc = data.board;
       applyBoard(data.board);
@@ -1328,6 +1600,7 @@ function connectLive() {
   token.source = source;
   source.addEventListener("cursor", (event) => paintRemote(JSON.parse(event.data)));
   source.addEventListener("file", (event) => applyRemoteFile(JSON.parse(event.data)));
+  source.addEventListener("control", (event) => applyControls(JSON.parse(event.data)));
   source.addEventListener("board", (event) => {
     const data = JSON.parse(event.data);
     if (data.authorId === session.me.id) return;

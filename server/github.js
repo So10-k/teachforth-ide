@@ -6,6 +6,7 @@ export const REPO_PREFIX = "TeachForth-";
 export const DISPLAY_PREFIX = "{TeachForth} ";
 
 import { normalizeTemplate, projectLanguage, starterList } from "./templates.js";
+import { commitFileList } from "./controls.js";
 
 export function originOf(req) {
   if (process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/$/, "");
@@ -68,24 +69,125 @@ export function visibleStudentProject(project) {
   return Number(project.open) === 1 || isTeachforthRepo(name);
 }
 
-export async function commitStudentProject(db, user, project, files) {
-  if (user.role !== "student" || project.owner_id !== user.id) {
+export async function commitStudentProject(db, user, project, files, options = {}) {
+  const owner = options.force
+    ? db.prepare("SELECT * FROM users WHERE id = ?").get(project.owner_id)
+    : user;
+  if (!options.force && (user.role !== "student" || project.owner_id !== user.id)) {
     fail(403, "Only the student can commit this project");
   }
-  if (!user.github_token) fail(400, "Link GitHub before closing, so the code can be saved there");
+  if (options.force && owner?.role !== "student") fail(400, "Only a student project can be committed");
+  if (!owner?.github_token) fail(400, "Link GitHub before closing, so the code can be saved there");
   const [login, repo] = String(project.github_repo || "").split("/");
   if (!login || !repo) fail(400, "This project is not a GitHub repository");
-  const result = await commitFiles(user.github_token, login, repo, withMarker(files, studentCode(db, user.id)), `TeachForth save ${new Date().toISOString().slice(0, 16)}`);
+  const message = options.message || `TeachForth save ${new Date().toISOString().slice(0, 16)}`;
+  const result = await commitFiles(
+    owner.github_token,
+    login,
+    repo,
+    commitFileList(db, project.id, withMarker(files, studentCode(db, owner.id))),
+    message,
+  );
   const now = new Date().toISOString();
-  db.prepare("DELETE FROM files WHERE project_id = ?").run(project.id);
-  db.prepare("DELETE FROM file_revisions WHERE project_id = ?").run(project.id);
-  db.prepare("UPDATE projects SET open = 0, github_sha = ?, github_url = ?, updated_at = ? WHERE id = ?").run(
-    result.sha,
-    result.url,
-    now,
+  if (!options.keep) {
+    db.prepare("DELETE FROM files WHERE project_id = ?").run(project.id);
+    db.prepare("DELETE FROM file_revisions WHERE project_id = ?").run(project.id);
+    db.prepare("UPDATE projects SET open = 0, github_sha = ?, github_url = ?, updated_at = ? WHERE id = ?").run(
+      result.sha,
+      result.url,
+      now,
+      project.id,
+    );
+  } else {
+    db.prepare("UPDATE projects SET github_sha = ?, github_url = ?, updated_at = ? WHERE id = ?").run(
+      result.sha,
+      result.url,
+      now,
+      project.id,
+    );
+  }
+  return result;
+}
+
+export async function inspectProject(db, project) {
+  const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(project.owner_id);
+  const issues = [];
+  const repo = String(project.github_repo || "");
+  const [login, name] = repo.split("/");
+  if (!repo) issues.push("No GitHub repository is linked.");
+  else if (!isTeachforthRepo(name || "")) issues.push("The repository name is not a public TeachForth repo.");
+  if (project.github_url && repo && !String(project.github_url).includes(repo)) {
+    issues.push("The stored link does not match the repository name.");
+  }
+  if (!owner?.github_token) issues.push("The student has not linked GitHub, so a commit cannot be saved.");
+  let remoteSha = "";
+  if (owner?.github_token && login && name) {
+    try {
+      const info = await gh(owner.github_token, "GET", `/repos/${login}/${name}`, null, true);
+      if (!info) issues.push("GitHub cannot see that repository.");
+      else {
+        if (info.private) issues.push("The repository is private. TeachForth only uses public TeachForth repos.");
+        const marker = await readMarker(owner.github_token, repo);
+        const found = parseTeachforthCode(marker);
+        const code = studentCode(db, owner.id);
+        if (!found) issues.push("The repository has no .teachforth file yet.");
+        else if (found !== code) issues.push("The .teachforth code does not match this student.");
+        const branch = info.default_branch || "main";
+        const ref = await gh(owner.github_token, "GET", `/repos/${login}/${name}/git/ref/heads/${encodeURIComponent(branch)}`, null, true);
+        remoteSha = ref?.object?.sha || "";
+        if (project.github_sha && remoteSha && project.github_sha !== remoteSha) {
+          issues.push("The saved revision does not match the latest GitHub commit.");
+        }
+      }
+    } catch (err) {
+      issues.push(err.publicMessage || "GitHub check failed.");
+    }
+  }
+  return {
+    githubRepo: repo,
+    githubUrl: project.github_url || "",
+    githubSha: project.github_sha || "",
+    studentLogin: owner?.github_login || "",
+    remoteSha,
+    issues,
+  };
+}
+
+export async function relinkProject(db, project, fullName) {
+  const [login, repo] = String(fullName || "").trim().split("/");
+  if (!login || !repo || !/^[\w.-]+$/.test(login) || !isTeachforthRepo(repo)) {
+    fail(400, "Use a public TeachForth repository, like student/TeachForth-name");
+  }
+  const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(project.owner_id);
+  if (!owner?.github_token) fail(400, "The student has not linked GitHub");
+  const info = await gh(owner.github_token, "GET", `/repos/${login}/${repo}`);
+  if (info.private) fail(400, "That repository is private");
+  const found = parseTeachforthCode(await readMarker(owner.github_token, `${login}/${repo}`));
+  const code = studentCode(db, owner.id);
+  if (found && found !== code) fail(400, "That repository belongs to a different TeachForth student");
+  const url = info.html_url || `https://github.com/${login}/${repo}`;
+  const now = new Date().toISOString();
+  db.prepare("UPDATE projects SET github_repo = ?, github_url = ?, updated_at = ? WHERE id = ?").run(`${login}/${repo}`, url, now, project.id);
+  return { githubRepo: `${login}/${repo}`, githubUrl: url };
+}
+
+export async function renameLinkedRepo(db, project, title) {
+  const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(project.owner_id);
+  const [login, repo] = String(project.github_repo || "").split("/");
+  if (!owner?.github_token || !login || !repo) fail(400, "This project is not linked to the student's GitHub");
+  const next = repoNameFor(title);
+  if (next === repo) return { githubRepo: project.github_repo, githubUrl: project.github_url || "" };
+  const info = await gh(owner.github_token, "PATCH", `/repos/${login}/${repo}`, { name: next });
+  const full = info.full_name || `${login}/${next}`;
+  const url = info.html_url || `https://github.com/${full}`;
+  db.prepare("UPDATE projects SET github_repo = ?, github_url = ?, title = ?, updated_at = ? WHERE id = ?").run(
+    full,
+    url,
+    displayTitle(title).slice(0, 80),
+    new Date().toISOString(),
     project.id,
   );
-  return result;
+  return { githubRepo: full, githubUrl: url, title: displayTitle(title).slice(0, 80) };
 }
 
 export async function hydrateProject(db, project) {

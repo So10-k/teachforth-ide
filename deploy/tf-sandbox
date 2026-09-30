@@ -1,0 +1,39 @@
+#!/bin/bash
+# Root-owned runner. The IDE may pass only a job id. It cannot choose a shell command.
+set -euo pipefail
+umask 077
+
+ROOT="/var/lib/teachforth-run/jobs"
+EXEC="/usr/local/lib/teachforth/tf-exec.py"
+
+if [[ "${1:-}" == "--stop" ]]; then
+  id="${2:-}"
+  [[ "$id" =~ ^[a-f0-9]{32}$ ]] || exit 2
+  pidfile="$ROOT/$id/pid"
+  [[ -f "$pidfile" ]] || exit 0
+  pid="$(tr -cd '0-9' < "$pidfile")"
+  [[ "$pid" =~ ^[0-9]+$ ]] || exit 2
+  kill -TERM "$pid" 2>/dev/null || true
+  sleep 0.2
+  kill -KILL "$pid" 2>/dev/null || true
+  exit 0
+fi
+
+id="${1:-}"
+[[ "$id" =~ ^[a-f0-9]{32}$ ]] || exit 2
+dir="$ROOT/$id"
+[[ -d "$dir" && ! -L "$dir" && -f "$dir/run.json" ]] || exit 2
+
+chown -R tf-run:tf-run "$dir"
+chmod 700 "$dir"
+chmod 711 "$(dirname "$ROOT")" "$ROOT"
+cd "$dir"
+
+if ! unshare --net true; then
+  echo "sandbox network isolation is unavailable" >&2
+  exit 2
+fi
+
+exec unshare --net -- prlimit --as=2147483648 --nproc=40 --fsize=8000000 --nofile=64 --cpu=60 -- \
+  setpriv --reuid=tf-run --regid=tf-run --init-groups --inh-caps=-all -- \
+  /usr/bin/python3 "$EXEC" .

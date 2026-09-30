@@ -7,10 +7,13 @@ import { createHub, focus } from "./live.js";
 import { canAccessProject, canSeeStudent, orgRoute, recordRevision, studentsFor as sessionStudents, ROLES } from "./org.js";
 import { hashPassword, verifyPassword, newId, parseCookies, sessionCookie, clearCookie } from "./auth.js";
 import { zipStore } from "./zip.js";
-import { githubRoute, commitStudentProject, hydrateProject, visibleStudentProject } from "./github.js";
+import { githubRoute, commitStudentProject, hydrateProject, visibleStudentProject, inspectProject, relinkProject, renameLinkedRepo } from "./github.js";
 import { normalizeTemplate, projectLanguage, starterEntries, isHiddenFile } from "./templates.js";
 import { publicSlug, publishedUrl, removeSite, siteFiles, writeSite } from "./publish.js";
 import { endRun, pushLine, startRun, waitLine } from "./runtime.js";
+import { ensureControls, fileViews, controlView, publicControl, studentWriteBlock, setFileFlag, setBoardControl, moveFlags, clearFlags, flagMap, isLeadPlus } from "./controls.js";
+import { planSteps, startSandbox, readSandbox, writeSandboxStdin, stopSandbox } from "./sandbox.js";
+import { mintPreview, previewProject, previewBody } from "./preview-site.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC = join(ROOT, "public");
@@ -70,6 +73,7 @@ const presence = new Map();
 const hub = createHub();
 
 const db = openDatabase(DB_FILE);
+ensureControls(db);
 seed();
 ensureLibrary();
 if (IDLE_STAMP) touch(IDLE_STAMP);
@@ -78,6 +82,9 @@ const server = createServer(async (req, res) => {
   try {
     if (IDLE_STAMP) touch(IDLE_STAMP);
     const url = new URL(req.url, "http://localhost");
+    if (req.method === "GET" && url.pathname.startsWith("/preview-site/")) {
+      return servePreviewSite(res, url);
+    }
     if (req.method === "GET" && /^\/preview\/\d+\/?$/.test(url.pathname)) {
       return serveStatic("/preview.html", res);
     }
@@ -379,12 +386,22 @@ async function route(req, res, url) {
   if (runtimeRun && req.method === "DELETE") {
     requireUser(user);
     endRun(runtimeRun[1], user.id);
+    stopSandbox(runtimeRun[1], user.id);
     return send(res, 200, { ok: true });
+  }
+  if (path === "/api/runtime/output" && req.method === "GET") {
+    requireUser(user);
+    const data = readSandbox(url.searchParams.get("run"), user.id, url.searchParams.get("offset"));
+    if (!data) fail(404, "That program is not running");
+    return send(res, 200, data);
   }
   if (path === "/api/runtime/stdin" && req.method === "POST") {
     requireUser(user);
     const body = await readJson(req);
-    if (!pushLine(String(body.run || ""), user.id, body.line)) fail(404, "That program is not waiting");
+    const run = String(body.run || "");
+    if (!writeSandboxStdin(run, user.id, body.line) && !pushLine(run, user.id, body.line)) {
+      fail(404, "That program is not waiting");
+    }
     return send(res, 200, { ok: true });
   }
   if (path === "/api/runtime/stdin" && req.method === "GET") return runtimeStdin(res, user, url);
@@ -464,7 +481,12 @@ async function projectRoute(req, res, url, user, id, rest) {
     audit(user, "open_project", project.id, project.title);
     bumpUsage(db, "editor_opens");
     notePresence(project.id, user);
-    return send(res, 200, { project: projectView(project, user), files: editorFiles(id), viewers: viewersOf(id) });
+    return send(res, 200, {
+      project: projectView(project, user),
+      files: editorFiles(id, user),
+      viewers: viewersOf(id),
+      controls: controlView(db, user, project),
+    });
   }
   if (req.method === "GET" && rest === "/state") return projectState(res, url, user, id);
   if (req.method === "PUT" && rest === "/files") return saveFile(req, res, user, project);
@@ -474,6 +496,12 @@ async function projectRoute(req, res, url, user, id, rest) {
   if (req.method === "PUT" && rest === "/notes") return saveNotes(req, res, user, project);
   if (req.method === "PUT" && rest === "/board") return saveBoard(req, res, user, project);
   if (req.method === "POST" && rest === "/run") return saveRun(req, res, user, project);
+  if (req.method === "POST" && rest === "/exec") return execProject(req, res, user, project);
+  if (req.method === "POST" && rest === "/preview") return send(res, 200, { token: mintPreview(project.id) });
+  if (req.method === "PATCH" && rest === "/controls") return patchControls(req, res, user, project);
+  if (req.method === "GET" && rest === "/lead") return leadStatus(res, user, project);
+  if (req.method === "POST" && rest === "/commit") return forceCommit(res, user, project);
+  if (req.method === "PATCH" && rest === "/admin") return adminProject(req, res, user, project);
   if (req.method === "POST" && rest === "/publish") return publishProject(res, user, project);
   if (req.method === "DELETE" && rest === "/publish") return unpublishProject(res, user, project);
   if (req.method === "POST" && rest === "/presence") {
@@ -705,8 +733,9 @@ function projectState(res, url, user, id) {
     updatedAt: project.updated_at,
     viewers: viewersOf(id),
   };
-  if (revision !== project.revision) payload.files = editorFiles(id);
+  if (revision !== project.revision) payload.files = editorFiles(id, user);
   if (boardRevision !== project.board_revision) payload.board = hub.board(id) || normalizeBoard(project.board || "[]");
+  payload.controls = controlView(db, user, project);
   send(res, 200, payload);
 }
 
@@ -715,6 +744,9 @@ async function saveFile(req, res, user, project) {
   if (project.kind === "github" && !project.open) fail(409, "This project is closed. Open it again.");
   const path = cleanPath(body.path);
   if (isHiddenFile(path)) fail(400, "That file stays with the project");
+  const block = studentWriteBlock(db, user, project, path);
+  if (block === "missing") fail(404, "File not found");
+  if (block === "locked") fail(403, "That file is locked");
   const content = String(body.content ?? "");
   if (content.length > 200_000) fail(413, "That file is too large for this pilot");
   const now = new Date().toISOString();
@@ -740,6 +772,7 @@ async function addFile(req, res, user, project) {
   const body = await readJson(req);
   const path = cleanPath(body.path);
   if (isHiddenFile(path)) fail(400, "That file stays with the project");
+  if (studentWriteBlock(db, user, project, path) === "missing") fail(404, "File not found");
   const now = new Date().toISOString();
   try {
     db.prepare("INSERT INTO files (project_id, path, content, updated_at) VALUES (?, ?, '', ?)").run(project.id, path, now);
@@ -749,7 +782,7 @@ async function addFile(req, res, user, project) {
   }
   db.prepare("UPDATE projects SET revision = revision + 1, updated_at = ? WHERE id = ?").run(now, project.id);
   audit(user, "add_file", project.id, path);
-  send(res, 201, { files: editorFiles(project.id), revision: loadProject(project.id).revision });
+  send(res, 201, { files: editorFiles(project.id, user), revision: loadProject(project.id).revision });
 }
 
 async function renameFile(req, res, user, project) {
@@ -757,7 +790,11 @@ async function renameFile(req, res, user, project) {
   const from = cleanPath(body.from);
   const to = cleanPath(body.to);
   if (isHiddenFile(from) || isHiddenFile(to)) fail(400, "That file stays with the project");
-  if (from === to) return send(res, 200, { files: editorFiles(project.id), revision: project.revision });
+  if (studentWriteBlock(db, user, project, from) === "locked") fail(403, "That file is locked");
+  if (studentWriteBlock(db, user, project, from) === "missing" || studentWriteBlock(db, user, project, to) === "missing") {
+    fail(404, "File not found");
+  }
+  if (from === to) return send(res, 200, { files: editorFiles(project.id, user), revision: project.revision });
   const existing = db.prepare("SELECT id FROM files WHERE project_id = ? AND path = ?").get(project.id, from);
   if (!existing) fail(404, "File not found");
   const clash = db.prepare("SELECT id FROM files WHERE project_id = ? AND path = ?").get(project.id, to);
@@ -765,22 +802,27 @@ async function renameFile(req, res, user, project) {
   const now = new Date().toISOString();
   db.prepare("UPDATE files SET path = ?, updated_at = ? WHERE project_id = ? AND path = ?").run(to, now, project.id, from);
   db.prepare("UPDATE file_revisions SET path = ? WHERE project_id = ? AND path = ?").run(to, project.id, from);
+  moveFlags(db, project.id, from, to);
   db.prepare("UPDATE projects SET revision = revision + 1, updated_at = ? WHERE id = ?").run(now, project.id);
   audit(user, "rename_file", project.id, `${from} -> ${to}`);
-  send(res, 200, { files: editorFiles(project.id), revision: loadProject(project.id).revision });
+  send(res, 200, { files: editorFiles(project.id, user), revision: loadProject(project.id).revision });
 }
 
 function removeFile(res, user, project, url) {
   const path = cleanPath(url.searchParams.get("path"));
   if (isHiddenFile(path)) fail(400, "That file stays with the project");
+  const block = studentWriteBlock(db, user, project, path);
+  if (block === "missing") fail(404, "File not found");
+  if (block === "locked") fail(403, "That file is locked");
   const existing = db.prepare("SELECT id FROM files WHERE project_id = ? AND path = ?").get(project.id, path);
   if (!existing) fail(404, "File not found");
   db.prepare("DELETE FROM files WHERE project_id = ? AND path = ?").run(project.id, path);
   db.prepare("DELETE FROM file_revisions WHERE project_id = ? AND path = ?").run(project.id, path);
+  clearFlags(db, project.id, path);
   const now = new Date().toISOString();
   db.prepare("UPDATE projects SET revision = revision + 1, updated_at = ? WHERE id = ?").run(now, project.id);
   audit(user, "delete_file", project.id, path);
-  send(res, 200, { files: editorFiles(project.id), revision: loadProject(project.id).revision });
+  send(res, 200, { files: editorFiles(project.id, user), revision: loadProject(project.id).revision });
 }
 
 async function saveNotes(req, res, user, project) {
@@ -804,6 +846,7 @@ async function saveBoard(req, res, user, project) {
 
 async function boardStroke(req, res, user, project) {
   const body = await readJson(req);
+  if (user.role === "student" && publicControl(db, project.id).lockDraw) fail(403, "The teacher locked the board");
   const doc = hub.board(project.id) || normalizeBoard(JSON.parse(loadProject(project.id).board || "[]"));
   const slide = doc.slides.find((item) => item.id === body.slideId) || doc.slides[doc.index] || doc.slides[0];
   if (!slide) fail(400, "No slide");
@@ -914,7 +957,7 @@ async function liveSignal(req, res, user, id) {
 
 async function publishProject(res, user, project) {
   if (user.role === "student") fail(403, "Only a teacher can publish a project");
-  const site = siteFiles(filesOf(project.id));
+  const site = siteFiles(shareableFiles(project.id));
   if (!site.ok) fail(400, site.error);
   const slug = publicSlug(project);
   const url = await pushSite(slug, site.files);
@@ -987,7 +1030,11 @@ async function saveRun(req, res, user, project) {
 }
 
 function exportZip(res, user, project) {
-  const files = filesOf(project.id);
+  const flags = flagMap(db, project.id);
+  const files = filesOf(project.id).filter((file) => {
+    if (isHiddenFile(file.path)) return false;
+    return user.role !== "student" || !flags.get(file.path)?.hidden;
+  });
   const zip = zipStore(files);
   audit(user, "export", project.id, project.title);
   res.writeHead(200, {
@@ -1073,8 +1120,133 @@ function filesOf(projectId) {
   return db.prepare("SELECT path, content, updated_at FROM files WHERE project_id = ? ORDER BY path").all(projectId);
 }
 
-function editorFiles(projectId) {
-  return filesOf(projectId).filter((file) => !isHiddenFile(file.path));
+function editorFiles(projectId, user) {
+  return fileViews(db, projectId, user || { role: "student" });
+}
+
+function shareableFiles(projectId) {
+  const flags = flagMap(db, projectId);
+  return filesOf(projectId).filter((file) => !flags.get(file.path)?.hidden);
+}
+
+function servePreviewSite(res, url) {
+  const match = url.pathname.match(/^\/preview-site\/([a-f0-9]{48})\/?(.*)$/);
+  if (!match) {
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("Not found");
+    return;
+  }
+  const projectId = previewProject(match[1]);
+  if (!projectId) {
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("Preview expired");
+    return;
+  }
+  const flags = flagMap(db, projectId);
+  const files = filesOf(projectId).map((file) => ({ ...file, hidden: Boolean(flags.get(file.path)?.hidden) }));
+  let path = decodeURIComponent(match[2] || "index.html");
+  if (!path || path.endsWith("/")) path = `${path}index.html`;
+  if (!/^[\w./-]{1,120}$/.test(path) || path.includes("..")) {
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("Not found");
+    return;
+  }
+  const found = previewBody(files, path, match[1]);
+  if (!found) {
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("Not found");
+    return;
+  }
+  res.writeHead(200, {
+    "content-type": found.type,
+    "content-security-policy": "sandbox allow-scripts",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, no-store",
+  });
+  res.end(found.body);
+}
+
+async function execProject(req, res, user, project) {
+  const body = await readJson(req);
+  const file = body.file ? cleanPath(body.file) : "";
+  const kind = String(body.kind || "");
+  const flags = flagMap(db, project.id);
+  if (file && user.role === "student" && flags.get(file)?.hidden) fail(404, "File not found");
+  const files = filesOf(project.id).map((item) => ({ ...item, hidden: Boolean(flags.get(item.path)?.hidden) }));
+  const planned = planSteps(kind, file, files.find((item) => item.path === file)?.content || "");
+  if (!planned) fail(400, "That file cannot be run");
+  const runId = startSandbox({ userId: user.id, files, steps: planned.steps });
+  audit(user, "run", project.id, kind || file);
+  send(res, 201, { runId });
+}
+
+async function patchControls(req, res, user, project) {
+  if (user.role === "student" || project.owner_role !== "student") fail(403, "These controls are for a student's project");
+  const body = await readJson(req);
+  if (body.path) {
+    const path = cleanPath(body.path);
+    if (isHiddenFile(path)) fail(400, "That file stays with the project");
+    const existing = db.prepare("SELECT id FROM files WHERE project_id = ? AND path = ?").get(project.id, path);
+    if (!existing) fail(404, "File not found");
+    setFileFlag(db, project.id, path, body);
+    const now = new Date().toISOString();
+    db.prepare("UPDATE projects SET revision = revision + 1, updated_at = ? WHERE id = ?").run(now, project.id);
+    audit(user, "file_control", project.id, path);
+    const view = controlView(db, user, project);
+    hub.publish(project.id, "control", publicControl(db, project.id));
+    return send(res, 200, { files: editorFiles(project.id, user), controls: view, revision: loadProject(project.id).revision });
+  }
+  if (body.forceBoard !== undefined || body.lockDraw !== undefined) {
+    setBoardControl(db, project.id, body);
+    const view = controlView(db, user, project);
+    hub.publish(project.id, "control", publicControl(db, project.id));
+    audit(user, "board_control", project.id, "");
+    return send(res, 200, { controls: view });
+  }
+  fail(400, "Nothing to change");
+}
+
+function assertLead(user, project) {
+  if (project.owner_role !== "student" || !isLeadPlus(db, user, project.owner_id)) {
+    fail(403, "Only a session lead can do that");
+  }
+}
+
+async function leadStatus(res, user, project) {
+  assertLead(user, project);
+  send(res, 200, await inspectProject(db, project));
+}
+
+async function forceCommit(res, user, project) {
+  assertLead(user, project);
+  if (project.kind !== "github") fail(400, "This project is not linked to GitHub");
+  const who = user.github_login || user.email || user.name;
+  const result = await commitStudentProject(db, user, project, filesOf(project.id), {
+    force: true,
+    keep: true,
+    message: `TeachForth save by ${who}`,
+  });
+  audit(user, "force_commit", project.id, `${who} ${result.sha}`);
+  send(res, 200, result);
+}
+
+async function adminProject(req, res, user, project) {
+  assertLead(user, project);
+  const body = await readJson(req);
+  const result = {};
+  if (body.githubRepo) Object.assign(result, await relinkProject(db, project, body.githubRepo));
+  if (body.title) {
+    const title = String(body.title).trim().slice(0, 80);
+    if (!title) fail(400, "Name the project");
+    if (body.renameRepo) Object.assign(result, await renameLinkedRepo(db, loadProject(project.id), title));
+    else {
+      db.prepare("UPDATE projects SET title = ?, updated_at = ? WHERE id = ?").run(title, new Date().toISOString(), project.id);
+      result.title = title;
+    }
+  }
+  audit(user, "project_admin", project.id, result.githubRepo || result.title || "");
+  send(res, 200, { project: projectView(loadProject(project.id), user), ...result });
 }
 
 function projectView(project, user) {
