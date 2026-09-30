@@ -1018,7 +1018,10 @@ async function paintLead() {
     <label><input id="rename-repo" type="checkbox"> Rename the GitHub repository too</label>
     <button id="save-title" type="button">Save name</button>
     <label>GitHub repo<input id="lead-repo" placeholder="student/TeachForth-name" value="${esc(data.githubRepo || "")}"></label>
-    <button id="save-repo" type="button">Relink</button>`;
+    <button id="save-repo" type="button">Relink</button>
+    <label>Home hours<input id="home-hours" type="number" min="1" max="168" value="24"></label>
+    <button id="home-link" type="button">Home link</button>
+    ${data.home ? `<p class="muted">Until ${esc(new Date(data.home.expiresAt).toLocaleString())}</p><input id="home-url" readonly value="${esc(data.home.url)}"><button id="home-end" type="button">End home link</button>` : ""}`;
   box.querySelector("#force-commit").onclick = async () => {
     try {
       const saved = await session.api(`/api/projects/${editorState.id}/commit`, { method: "POST", body: {} });
@@ -1031,6 +1034,33 @@ async function paintLead() {
     renameRepo: box.querySelector("#rename-repo").checked,
   });
   box.querySelector("#save-repo").onclick = () => saveLead({ githubRepo: box.querySelector("#lead-repo").value });
+  box.querySelector("#home-link").onclick = async () => {
+    const button = box.querySelector("#home-link");
+    button.disabled = true;
+    try {
+      await session.api(`/api/projects/${editorState.id}/home`, {
+        method: "POST",
+        body: { hours: Number(box.querySelector("#home-hours").value) },
+      });
+      setSaveState("Home link ready");
+      paintLead();
+    } catch (err) {
+      setSaveState(err.message);
+      button.disabled = false;
+    }
+  };
+  const end = box.querySelector("#home-end");
+  if (end) end.onclick = async () => {
+    end.disabled = true;
+    try {
+      await session.api(`/api/projects/${editorState.id}/home`, { method: "DELETE" });
+      setSaveState("Home link ended");
+      paintLead();
+    } catch (err) {
+      setSaveState(err.message);
+      end.disabled = false;
+    }
+  };
 }
 
 async function saveLead(body) {

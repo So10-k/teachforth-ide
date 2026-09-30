@@ -29,6 +29,8 @@ git push origin main
 
 Do not commit secrets. Do not rewrite history on `main`.
 
+Home links are not part of the Azure process. The light IDE runs on this machine as `teachforth-home.service`, with temporary sessions in `/var/lib/teachforth-home`. A code update there is a copy of `deploy/home-server.js` and `public/home.js` into `/opt/teachforth-home`, then a restart of that service. Do not copy student sessions or the home token into git. The class VM reads the same token from `/var/lib/teachforth-ide/home-token`.
+
 ## 3. Put that commit on the VM
 
 The VM is often off. Start it from the power panel. Do not turn the old 8:00 / 9:30 schedule back on.

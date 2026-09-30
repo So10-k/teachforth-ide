@@ -7,7 +7,8 @@ import { createHub, focus } from "./live.js";
 import { canAccessProject, canSeeStudent, orgRoute, recordRevision, studentsFor as sessionStudents, ROLES } from "./org.js";
 import { hashPassword, verifyPassword, newId, parseCookies, sessionCookie, clearCookie } from "./auth.js";
 import { zipStore } from "./zip.js";
-import { githubRoute, commitStudentProject, hydrateProject, visibleStudentProject, inspectProject, relinkProject, renameLinkedRepo, pace, studentMayOpen } from "./github.js";
+import { githubRoute, commitStudentProject, hydrateProject, visibleStudentProject, inspectProject, relinkProject, renameLinkedRepo, pace, studentMayOpen, pullIfGithubNewer } from "./github.js";
+import { configureHome, createHomeLink, endHomeLink, ensureHome, homeView } from "./homework.js";
 import { normalizeTemplate, projectLanguage, starterEntries, isHiddenFile } from "./templates.js";
 import { publicSlug, publishedUrl, removeSite, siteFiles, writeSite } from "./publish.js";
 import { endRun, pushLine, startRun, waitLine } from "./runtime.js";
@@ -74,6 +75,8 @@ const hub = createHub();
 
 const db = openDatabase(DB_FILE);
 ensureControls(db);
+configureHome(DATA_DIR);
+ensureHome(db);
 seed();
 ensureLibrary();
 if (IDLE_STAMP) touch(IDLE_STAMP);
@@ -479,6 +482,9 @@ async function projectRoute(req, res, url, user, id, rest) {
   if (req.method === "POST" && rest === "/live") return liveSignal(req, res, user, id);
   if (req.method === "POST" && rest === "/board/stroke") return boardStroke(req, res, user, project);
   if (req.method === "GET" && rest === "") {
+    if (project.kind === "github" && project.open) {
+      if (await pullIfGithubNewer(db, project)) project = loadProject(id);
+    }
     audit(user, "open_project", project.id, project.title);
     bumpUsage(db, "editor_opens");
     notePresence(project.id, user);
@@ -502,6 +508,8 @@ async function projectRoute(req, res, url, user, id, rest) {
   if (req.method === "PATCH" && rest === "/controls") return patchControls(req, res, user, project);
   if (req.method === "GET" && rest === "/lead") return leadStatus(res, user, project);
   if (req.method === "POST" && rest === "/commit") return forceCommit(res, user, project);
+  if (req.method === "POST" && rest === "/home") return makeHomeLink(req, res, user, project);
+  if (req.method === "DELETE" && rest === "/home") return stopHomeLink(res, user, project);
   if (req.method === "PATCH" && rest === "/admin") return adminProject(req, res, user, project);
   if (req.method === "POST" && rest === "/publish") return publishProject(res, user, project);
   if (req.method === "DELETE" && rest === "/publish") return unpublishProject(res, user, project);
@@ -1260,7 +1268,22 @@ function assertLead(user, project) {
 
 async function leadStatus(res, user, project) {
   assertLead(user, project);
-  send(res, 200, await inspectProject(db, project));
+  const status = await inspectProject(db, project);
+  status.home = homeView(db, project.id);
+  send(res, 200, status);
+}
+
+async function makeHomeLink(req, res, user, project) {
+  const body = await readJson(req);
+  const result = await createHomeLink(db, user, project, filesOf(project.id), body.hours);
+  audit(user, "home_link", project.id, result.expiresAt);
+  send(res, 200, result);
+}
+
+async function stopHomeLink(res, user, project) {
+  const result = await endHomeLink(db, user, project);
+  audit(user, "home_end", project.id, "");
+  send(res, 200, result);
 }
 
 async function forceCommit(res, user, project) {

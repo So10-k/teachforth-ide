@@ -54,6 +54,11 @@ function ago(iso) {
 async function boot() {
   const data = await api("/api/me");
   me = data.user;
+  const next = sessionStorage.getItem("tf-next");
+  if (me && next && next.startsWith("#/project/") && !location.hash.startsWith("#/project/")) {
+    sessionStorage.removeItem("tf-next");
+    location.hash = next;
+  }
   window.addEventListener("hashchange", render);
   window.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -142,6 +147,9 @@ function loginView() {
   </form></div>`;
   const githubError = new URLSearchParams(location.search).get("github");
   if (githubError) document.querySelector("#err").textContent = "That GitHub account is not a TeachForth student yet. Sign in with email once, then connect GitHub.";
+  document.querySelector("a[href='/api/github/login']")?.addEventListener("click", () => {
+    if (location.hash.startsWith("#/project/")) sessionStorage.setItem("tf-next", location.hash);
+  });
   document.querySelector("#login").onsubmit = async (event) => {
     event.preventDefault();
     try {
@@ -150,7 +158,9 @@ function loginView() {
         body: { email: email.value, password: password.value },
       });
       me = data.user;
-      location.hash = "#/";
+      const next = sessionStorage.getItem("tf-next");
+      sessionStorage.removeItem("tf-next");
+      location.hash = location.hash.startsWith("#/project/") ? location.hash : (next && next.startsWith("#/project/") ? next : "#/");
       render();
     } catch (err) {
       errEl.textContent = err.message;

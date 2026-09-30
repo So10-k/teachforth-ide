@@ -1,11 +1,13 @@
-import { displayTitle, githubScope, isTeachforthRepo, parseTeachforthCode, pace, repoNameFor, repoNeedsPrivate, teachforthMarker, visibleStudentProject } from "./github.js";
+import { displayTitle, githubScope, isTeachforthRepo, keptLocalFiles, parseTeachforthCode, pace, repoNameFor, repoNeedsPrivate, teachforthMarker, visibleStudentProject } from "./github.js";
+import { safeRel } from "../deploy/home-server.js";
 import { planSteps } from "./sandbox.js";
 import { rewriteHtml } from "./preview-site.js";
 import { runJava } from "../public/java-lang.js";
 import { publicSlug, siteFiles } from "./publish.js";
 import { mergeText } from "../public/merge.js";
+import { request as httpRequest } from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const dir = mkdtempSync(join(tmpdir(), "teachforth-"));
@@ -32,6 +34,28 @@ child.stdout.on("data", (buf) => { logs += buf; });
 child.stderr.on("data", (buf) => { logs += buf; });
 
 const base = `http://127.0.0.1:${port}`;
+const homeDir = mkdtempSync(join(tmpdir(), "tf-home-"));
+writeFileSync(join(homeDir, "token"), "selftest-home-token\n");
+const homePort = 8794;
+const homeBase = `http://127.0.0.1:${homePort}`;
+let homeLogs = "";
+const homeChild = spawn(process.execPath, ["deploy/home-server.js"], {
+  cwd: new URL("..", import.meta.url).pathname,
+  env: {
+    ...process.env,
+    PORT: String(homePort),
+    HOST: "127.0.0.1",
+    HOME_DIR: homeDir,
+    STATIC_DIR: join(new URL("..", import.meta.url).pathname, "public"),
+    PUBLIC_PREFIX: "",
+    HOME_TOKEN_FILE: join(homeDir, "token"),
+    IDE_HEALTH_URL: "http://127.0.0.1:1/api/health",
+    IDE_PUBLIC_URL: "http://127.0.0.1:1",
+  },
+  stdio: ["ignore", "pipe", "pipe"],
+});
+homeChild.stdout.on("data", (buf) => { homeLogs += buf; });
+homeChild.stderr.on("data", (buf) => { homeLogs += buf; });
 
 assert(isTeachforthRepo("TeachForth-cards") && !isTeachforthRepo("cards"), "repo prefix");
 assert(repoNameFor("{TeachForth} Cards") === "TeachForth-cards", "repo slug");
@@ -58,6 +82,15 @@ assert(mergeText("abc", "abc", "abYc") === "abYc", "remote edit applies when loc
 assert(mergeText("hello", "hello Sam", "hello!") === "hello Sam!", "non-overlapping edits both survive");
 assert(mergeText("cat", "dog", "rat") === "dog", "overlapping remote edit does not wipe local typing");
 assert(pace("selftest-create", 1, 60_000) === true && pace("selftest-create", 1, 60_000) === false, "repeated repository creates are paced");
+const kept = keptLocalFiles(
+  [{ path: "answers.txt", content: "secret" }, { path: "index.html", content: "old" }, { path: ".teachforth", content: "code" }],
+  new Map([["answers.txt", { hidden: 1, skip_github: 0 }]]),
+  [{ path: "index.html", content: "new" }],
+);
+assert(kept.some((file) => file.path === "answers.txt") && kept.some((file) => file.path === ".teachforth") && !kept.some((file) => file.path === "index.html"), "a class pull keeps hidden files");
+let badHomePath = false;
+try { safeRel("../meta.json"); } catch { badHomePath = true; }
+assert(safeRel("src/index.html") === "src/index.html" && badHomePath, "home paths stay inside the session");
 assert(repoNeedsPrivate({ private: false }) === true && repoNeedsPrivate({ private: true }) === false, "only a public repository is blocked");
 assert(githubScope().includes("repo") && githubScope().includes("delete_repo"), "private repositories and visibility changes stay in scope");
 
@@ -400,6 +433,62 @@ try {
   assert(teacherCommit.status === 403, "paired teacher cannot force a commit");
   const leadCommit = await send(`/api/projects/${page.id}/commit`, { method: "POST", cookie: lead.cookie, ok: false });
   assert(leadCommit.status === 400, "lead commit is allowed and stops at GitHub");
+  const homeDenied = await send(`/api/projects/${page.id}/home`, { method: "POST", cookie: student.cookie, body: { hours: 2 }, ok: false });
+  assert(homeDenied.status === 403, "student cannot mint a home link");
+  const badHours = await send(`/api/projects/${page.id}/home`, { method: "POST", cookie: lead.cookie, body: { hours: 0 }, ok: false });
+  assert(badHours.status === 400, "home hours are capped");
+  const homeLead = await send(`/api/projects/${page.id}/home`, { method: "POST", cookie: lead.cookie, body: { hours: 2 }, ok: false });
+  assert(homeLead.status === 503, "home link waits until the host is configured");
+  await waitForHome();
+  const homeSecret = "gho_selftest_secret";
+  const pushed = await fetch(`${homeBase}/push`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-teachforth-token": "selftest-home-token" },
+    body: JSON.stringify({
+      id: "ab".repeat(24),
+      projectId: 7,
+      title: "Home",
+      language: "web",
+      githubRepo: "student/TeachForth-home",
+      expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+      token: homeSecret,
+      marker: "tf_selftest",
+      files: [{ path: "index.html", content: "<h1>Hi</h1><script src=\"/script.js\"></script>" }, { path: "script.js", content: "alert(1)" }],
+    }),
+  });
+  assert(pushed.ok, "home host accepts a link");
+  const homeDeniedPush = await fetch(`${homeBase}/push`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert(homeDeniedPush.status === 401, "home push requires the host token");
+  const pageRes = await fetch(`${homeBase}/s/${"ab".repeat(24)}/`);
+  const pageHtml = await pageRes.text();
+  assert(pageRes.status === 200 && pageHtml.includes("home.js") && !pageHtml.includes(homeSecret), "home page hides the GitHub token");
+  const stateRes = await fetch(`${homeBase}/s/${"ab".repeat(24)}/api/state`);
+  const stateText = await stateRes.text();
+  assert(stateRes.ok && stateText.includes("index.html") && !stateText.includes(homeSecret) && !stateText.includes("tf_selftest"), "home state hides the token and marker");
+  const sneak = await rawHome(`/s/${"ab".repeat(24)}/preview/../meta.json`);
+  assert(sneak === 400, "home preview rejects traversal");
+  const homePreview = await fetch(`${homeBase}/s/${"ab".repeat(24)}/preview/`);
+  const homePreviewHtml = await homePreview.text();
+  assert(homePreview.headers.get("content-security-policy")?.includes("sandbox") && homePreviewHtml.includes('src="script.js"') && !homePreviewHtml.includes('src="/script.js"'), "home preview rewrites root links");
+  const homeEnded = await fetch(`${homeBase}/push?id=${"ab".repeat(24)}`, { method: "DELETE", headers: { "x-teachforth-token": "selftest-home-token" } });
+  assert(homeEnded.ok, "home link can be ended");
+  const gone = await fetch(`${homeBase}/s/${"ab".repeat(24)}/api/state`);
+  assert(gone.status === 410, "ended home link is gone");
+  const expired = await fetch(`${homeBase}/push`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-teachforth-token": "selftest-home-token" },
+    body: JSON.stringify({
+      id: "cd".repeat(24),
+      projectId: 8,
+      title: "Old",
+      githubRepo: "student/TeachForth-old",
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      token: homeSecret,
+      marker: "tf_old",
+      files: [],
+    }),
+  });
+  assert(expired.status === 400, "home host rejects an expired link");
   const hiddenPreview = await fetch(`${base}/preview-site/${preview.token}/index.html`);
   assert(hiddenPreview.status === 404, "hidden page is not served");
   const pyRun = await send(`/api/projects/${py.project.id}/exec`, {
@@ -420,11 +509,37 @@ try {
   console.log("outsider blocked", outsider.user.email);
 } catch (err) {
   console.error(logs);
+  console.error(homeLogs);
   console.error(err);
   process.exitCode = 1;
 } finally {
   child.kill("SIGTERM");
+  homeChild.kill("SIGTERM");
   rmSync(dir, { recursive: true, force: true });
+  rmSync(homeDir, { recursive: true, force: true });
+}
+
+function rawHome(path) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ hostname: "127.0.0.1", port: homePort, path, method: "GET" }, (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function waitForHome() {
+  for (let i = 0; i < 40; i++) {
+    try {
+      const res = await fetch(`${homeBase}/health`);
+      if (res.ok) return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  throw new Error("home host did not start\n" + homeLogs);
 }
 
 async function waitForHealth() {

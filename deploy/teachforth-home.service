@@ -1,0 +1,28 @@
+[Unit]
+Description=TeachForth temporary home IDE
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tfhome
+Group=tfhome
+WorkingDirectory=/opt/teachforth-home
+ExecStart=/usr/bin/node /opt/teachforth-home/home-server.js
+Environment=HOST=127.0.0.1
+Environment=PORT=8793
+Environment=HOME_DIR=/var/lib/teachforth-home
+Environment=STATIC_DIR=/opt/teachforth-home/static
+Environment=PUBLIC_PREFIX=/teachforth-home
+Environment=IDE_HEALTH_URL=http://74.248.20.108/api/health
+Environment=IDE_PUBLIC_URL=https://74-248-20-108.sslip.io
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/teachforth-home
+
+[Install]
+WantedBy=multi-user.target

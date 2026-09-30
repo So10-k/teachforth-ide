@@ -7,8 +7,8 @@ const privacyCache = new Map();
 export const REPO_PREFIX = "TeachForth-";
 export const DISPLAY_PREFIX = "{TeachForth} ";
 
-import { normalizeTemplate, projectLanguage, starterList } from "./templates.js";
-import { commitFileList } from "./controls.js";
+import { isHiddenFile, normalizeTemplate, projectLanguage, starterList } from "./templates.js";
+import { commitFileList, flagMap } from "./controls.js";
 
 export function originOf(req) {
   if (process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/$/, "");
@@ -82,6 +82,10 @@ export function repoNameFor(title) {
   const base = String(title || "").replace(/^\{TeachForth\}\s*/i, "").replace(/^TeachForth-/i, "");
   const slug = base.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50) || "project";
   return `${REPO_PREFIX}${slug}`;
+}
+
+export function projectMarker(db, ownerId) {
+  return teachforthMarker(studentCode(db, ownerId));
 }
 
 export function teachforthMarker(code) {
@@ -172,7 +176,7 @@ export async function inspectProject(db, project) {
   const repo = String(project.github_repo || "");
   const [login, name] = repo.split("/");
   if (!repo) issues.push("No GitHub repository is linked.");
-  else if (!isTeachforthRepo(name || "")) issues.push("The repository name is not a public TeachForth repo.");
+  else if (!isTeachforthRepo(name || "")) issues.push("The repository name is not a TeachForth repo.");
   if (project.github_url && repo && !String(project.github_url).includes(repo)) {
     issues.push("The stored link does not match the repository name.");
   }
@@ -183,7 +187,7 @@ export async function inspectProject(db, project) {
       const info = await gh(owner.github_token, "GET", `/repos/${login}/${name}`, null, true);
       if (!info) issues.push("GitHub cannot see that repository.");
       else {
-        if (info.private) issues.push("The repository is private. TeachForth only uses public TeachForth repos.");
+        if (info.private === false) issues.push("The repository is still public. The student must make it private.");
         const marker = await readMarker(owner.github_token, repo);
         const found = parseTeachforthCode(marker);
         const code = studentCode(db, owner.id);
@@ -214,12 +218,12 @@ export async function relinkProject(db, project, fullName) {
   guard(`relink:${project.id}`, 1, 20_000, "Wait a few seconds before changing the GitHub link again.");
   const [login, repo] = String(fullName || "").trim().split("/");
   if (!login || !repo || !/^[\w.-]+$/.test(login) || !isTeachforthRepo(repo)) {
-    fail(400, "Use a public TeachForth repository, like student/TeachForth-name");
+    fail(400, "Use a TeachForth repository, like student/TeachForth-name");
   }
   const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(project.owner_id);
   if (!owner?.github_token) fail(400, "The student has not linked GitHub");
   const info = await gh(owner.github_token, "GET", `/repos/${login}/${repo}`);
-  if (info.private) fail(400, "That repository is private");
+  await grantMonitor(owner.github_token, `${login}/${repo}`);
   const found = parseTeachforthCode(await readMarker(owner.github_token, `${login}/${repo}`));
   const code = studentCode(db, owner.id);
   if (found && found !== code) fail(400, "That repository belongs to a different TeachForth student");
@@ -256,6 +260,7 @@ export async function hydrateProject(db, project) {
   if (!owner?.github_token || !project.github_repo) fail(400, "This project is on GitHub, and the student has not linked an account");
   const [login, repo] = project.github_repo.split("/");
   const files = await pullRepo(owner.github_token, login, repo);
+  const sha = await remoteHead(owner.github_token, login, repo);
   const now = new Date().toISOString();
   db.exec("BEGIN");
   try {
@@ -263,7 +268,7 @@ export async function hydrateProject(db, project) {
     const insert = db.prepare("INSERT INTO files (project_id, path, content, updated_at) VALUES (?, ?, ?, ?)");
     const source = withMarker(files.length ? files : starter(project.language), studentCode(db, owner.id));
     for (const file of source) insert.run(project.id, file.path, file.content, now);
-    db.prepare("UPDATE projects SET open = 1, updated_at = ? WHERE id = ?").run(now, project.id);
+    db.prepare("UPDATE projects SET open = 1, github_sha = ?, updated_at = ? WHERE id = ?").run(sha || project.github_sha || "", now, project.id);
     db.exec("COMMIT");
   } catch (err) {
     db.exec("ROLLBACK");
@@ -551,6 +556,66 @@ async function createRepo(token, name, description) {
   }
   if (created?.full_name) await grantMonitor(token, created.full_name);
   return created;
+}
+
+export function keptLocalFiles(localFiles, flags, incoming) {
+  const incomingPaths = new Set(incoming.map((file) => file.path));
+  return localFiles.filter((file) => {
+    if (incomingPaths.has(file.path)) return false;
+    if (isHiddenFile(file.path)) return true;
+    const flag = flags.get(file.path);
+    return Boolean(flag?.hidden || flag?.skip_github);
+  });
+}
+
+export async function pullIfGithubNewer(db, project) {
+  if (project.kind !== "github" || !project.open || !project.github_repo) return false;
+  const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(project.owner_id);
+  if (!owner?.github_token) return false;
+  if (!pace(`pull:${project.id}`, 1, 5_000)) return false;
+  const [login, repo] = String(project.github_repo).split("/");
+  if (!login || !repo) return false;
+  try {
+    const sha = await remoteHead(owner.github_token, login, repo);
+    if (!sha || sha === project.github_sha) return false;
+    const files = await pullRepo(owner.github_token, login, repo);
+    if (!files.length) return false;
+    applyPulledFiles(db, project, files, sha);
+    return true;
+  } catch (err) {
+    console.error("pull-newer", project.id, err.publicMessage || err.message);
+    return false;
+  }
+}
+
+export function applyPulledFiles(db, project, files, sha) {
+  const flags = flagMap(db, project.id);
+  const local = db.prepare("SELECT path, content FROM files WHERE project_id = ?").all(project.id);
+  const keep = keptLocalFiles(local, flags, files);
+  const now = new Date().toISOString();
+  db.exec("BEGIN");
+  try {
+    db.prepare("DELETE FROM files WHERE project_id = ?").run(project.id);
+    const insert = db.prepare("INSERT INTO files (project_id, path, content, updated_at) VALUES (?, ?, ?, ?)");
+    for (const file of [...files, ...keep]) insert.run(project.id, file.path, String(file.content ?? ""), now);
+    db.prepare("UPDATE projects SET github_sha = ?, revision = revision + 1, updated_at = ? WHERE id = ?").run(
+      sha || project.github_sha || "",
+      now,
+      project.id,
+    );
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+async function remoteHead(token, owner, repo) {
+  const info = await gh(token, "GET", `/repos/${owner}/${repo}`, null, true);
+  if (!info) return "";
+  const branch = info.default_branch || "main";
+  const ref = await gh(token, "GET", `/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`, null, true);
+  return ref?.object?.sha || "";
 }
 
 async function pullRepo(token, owner, repo) {
