@@ -25,7 +25,7 @@ async function homePage(main, me, api, esc, powerUrl) {
     const callout = linked ? "" : `<section class="github-callout"><div><h2>GitHub is required</h2><p>${me.githubLogin ? `The link to @${esc(me.githubLogin)} stopped working. Link it again before you open or save a project.` : "Connect GitHub before class. That account becomes this TeachForth account, and every project is saved there."}</p></div><a class="btn" href="/api/github/connect">${connectLabel}</a></section>`;
     main.innerHTML = page(
       `Hello, ${esc(me.name.split(" ")[0])}`,
-      linked ? `Projects are saved to @${esc(me.githubLogin)}. TeachForth only keeps one while it is open.` : "Connect GitHub first. A project cannot be saved without it.",
+      linked ? `Projects are saved to @${esc(me.githubLogin)}. TeachForth only stores your code while it is open.` : "Connect GitHub first. A project cannot be saved without it.",
       `${callout}
        ${profileHead(data, esc, false)}
        <div class="row" style="justify-content:space-between;align-items:center"><h2 class="unit" style="margin:0">Your projects</h2><button class="btn" id="new-project" type="button">New project</button></div>
@@ -51,7 +51,7 @@ async function homePage(main, me, api, esc, powerUrl) {
     `<div class="stats">
         <article class="stat"><span>Chapters</span><strong>${stats.chapters}</strong></article>
         <article class="stat"><span>Students</span><strong>${stats.students}</strong></article>
-        <article class="stat"><span>Live blocks</span><strong>${stats.liveBlocks}</strong></article>
+        <article class="stat"><span>Sessions</span><strong>${stats.liveBlocks}</strong></article>
         ${me.role === "admin" ? `<article class="stat"><span>Teachers</span><strong>${stats.teachers}</strong></article>` : ""}
       </div>
       <div class="split">

@@ -93,7 +93,7 @@ export async function openEditor({ app, id, me, api, esc }) {
       <button id="export">Export</button>
       <button id="back">Back</button>
     </header>
-    ${teacher ? `<div class="banner">You are in ${esc(opened.project.ownerName)}'s project. This visit is logged. A session lead can force a commit, and that name is saved in the message.</div>` : ""}
+    ${teacher ? `<div class="banner">You are in ${esc(opened.project.ownerName)}'s project. Please remember to instruct your student to commit their code to Github by clicking the "Back" button, or have a session lead commit it.</div>` : ""}
     ${!teacher && opened.project.kind === "github" ? `<div class="banner">Closing this project commits to your GitHub and removes the code from TeachForth.</div>` : ""}
     <div class="ide-body">
       <nav class="activity" aria-label="Views">

@@ -133,7 +133,7 @@ function loginView() {
   app.innerHTML = `<div class="login-wrap"><form class="login-card" id="login">
     <img src="/logo.png" alt="" style="height:28px;width:auto">
     <h1>IDE</h1>
-    <p class="muted">Sign in with the account a teacher made for you. After you connect GitHub, that account is this one.</p>
+    <p class="muted">Sign in with your username and password. Please contact a teacher or chapter lead for assistance or account creation.</p>
     <label>Email <input id="email" autocomplete="username"></label>
     <label>Password <input id="password" type="password" autocomplete="current-password"></label>
     <p class="error" id="err"></p>
@@ -214,7 +214,7 @@ async function sandboxView() {
   const data = await loadCatalog();
   const main = document.querySelector("#main");
   main.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Sandbox</h1><button class="btn" id="new-box">New sandbox</button></div>
-    <p class="muted">A blank project. Not a lesson. Yours to break.</p>
+    <p class="muted">This code is stored on the server, not on GitHub.</p>
     ${data.sandboxes.map((project) => `<button class="lesson" data-id="${project.id}"><strong>${GLOBE}${esc(project.title)}</strong><span class="when">${esc(ago(project.updatedAt))}</span></button>`).join("") || `<p class="muted">No sandbox yet. Make one and start typing.</p>`}`;
   document.querySelector("#new-box").onclick = async () => {
     const title = prompt("Project name", "Sandbox") || "Sandbox";
@@ -233,7 +233,7 @@ async function studentsView() {
   const main = document.querySelector("#main");
   const [{ students }, { projects }] = await Promise.all([api("/api/students"), api("/api/projects")]);
   main.innerHTML = `<h1>Students</h1>
-    <p class="muted">You can open work only for students paired with you in a live block. Opening a project is logged.</p>
+    <p class="muted">You're a *Teacher*! Here, you can access the profiles and work of your currently assigned students. Good luck!</p>
     ${students.map((student) => {
       const theirs = projects.filter((project) => project.ownerId === student.id);
       return `<section class="panel"><h2>${esc(student.name)}</h2><p class="muted">${esc(student.email)}</p>
@@ -252,7 +252,7 @@ async function centerView() {
   const data = await api("/api/center");
   const live = data.blocks.filter((block) => block.status === "live");
   main.innerHTML = `<h1>Control center</h1>
-    <p class="muted">Students with a teacher in a live block. Opening a folder is logged.</p>
+    <p class="muted">Below, you can locate students who have been assigned a teacher in the currently active Community Classroom/Other Session.</p>
     ${live.map((block) => `<section class="panel"><h2>${esc(block.name)}</h2><p class="muted">${esc(block.chapterName)} · lead ${esc(block.leadName || "unassigned")}</p>
       <div class="cards">${block.students.map((student) => `<article class="card">
         <h3>${esc(student.name)}</h3>
@@ -260,8 +260,8 @@ async function centerView() {
         <p class="${student.focus ? "live-dot" : "muted"}">${student.focus ? `In ${esc(student.focus.file || "a file")}` : esc(student.latest?.title || "No project yet")}</p>
         <button class="btn" data-folder="${student.id}">Open folder</button>
         ${student.latest ? `<button class="btn-ghost" data-id="${student.latest.id}">Open code</button>` : ""}
-      </article>`).join("") || `<p class="muted">No pairs yet. The chapter lead adds them in Roster.</p>`}
-      </div></section>`).join("") || `<p class="muted">No live block. Start one from the console or roster.</p>`}`;
+      </article>`).join("") || `<p class="muted">No pairs yet. The chapter lead can create pairs in the Roster tab.</p>`}
+      </div></section>`).join("") || `<p class="muted">No session active. Start one from the console or roster.</p>`}`;
   bindFolderButtons(main);
 }
 
@@ -282,7 +282,7 @@ async function rosterView() {
         ${block.status !== "live" ? `<button class="btn-ghost" data-live="${block.id}">Start session</button>` : `<button class="btn-ghost" data-end="${block.id}">End session</button>`}
       </div>
       ${(block.pairs || []).map((pair) => `<div class="row"><span>${esc(pair.teacher_name)} → ${esc(pair.student_name)}</span><button class="btn-ghost" data-unpair="${block.id}" data-student-id="${pair.student_id}">Remove</button></div>`).join("")}
-    </section>`).join("") || `<p class="muted">No open block. An admin creates the chapter and block in Console.</p>`}`;
+    </section>`).join("") || `<p class="muted">No open block.</p>`}`;
   for (const button of main.querySelectorAll("[data-pair]")) {
     button.onclick = async () => {
       const id = button.dataset.pair;
@@ -338,7 +338,7 @@ async function folderView(id) {
     ${data.projects.map((project) => `<button class="lesson" data-id="${project.id}"><strong>${esc(project.title)}</strong><span class="when">${esc(ago(project.updatedAt))}</span></button>`).join("") || `<p class="muted">No projects yet.</p>`}
     ${staff ? `<h2 class="unit">Session report</h2>
       <section class="panel">
-        <p class="muted">Students never see this. The diff is their code since the previous report.</p>
+        <p class="muted">Students cannot see this. The diff is their code since the previous report.</p>
         <textarea id="report-body" placeholder="What did you work on?"></textarea>
         <pre class="diff" id="diff">${esc(data.preview || "")}</pre>
         <button class="btn" id="save-report">Save report</button>
@@ -515,7 +515,7 @@ async function editorView(id) {
       <button id="export">Export</button>
       <button id="back">Back</button>
     </header>
-    ${teacher ? `<div class="banner">You are in ${esc(opened.project.ownerName)}'s project. This visit is logged. Only the student can commit it to GitHub.</div>` : ""}
+    ${teacher ? `<div class="banner">You are in ${esc(opened.project.ownerName)}'s project. Please note that the code located here must be committed to Github by the end of the session. The student can do this via the "Back" button, or a session lead+ can perform this action via their tools.</div>` : ""}
     ${!teacher && opened.project.kind === "github" ? `<div class="banner">Closing this project commits to your GitHub and removes the code from TeachForth.</div>` : ""}
     <div class="ide-body">
       <aside class="files" id="files"></aside>
@@ -848,10 +848,7 @@ function openHelp() {
   const modal = document.createElement("div");
   modal.className = "modal";
   modal.innerHTML = `<h2>Help</h2>
-    <p>Students keep code in their own GitHub repositories. TeachForth only stores a project while it is open.</p>
-    <p>Teachers keep personal code in Sandbox. They cannot push a student's repository.</p>
-    <p>In the editor, type immediately. Ctrl+S or ⌘S saves. Ctrl+Enter or ⌘Enter runs. Back commits a student project.</p>
-    <p>Board is a shared whiteboard. Cursors show live while you type.</p>
+    <p><strong>Please contact an administrator for assistance.</strong></p>
     <button class="btn" id="close-pop">Close</button>`;
   document.body.append(backdrop, modal);
   backdrop.onclick = closePop;
