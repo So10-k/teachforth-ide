@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { newId } from "./auth.js";
 
 const SCOPE = "repo read:user user:email";
@@ -69,7 +69,34 @@ export function visibleStudentProject(project) {
   return Number(project.open) === 1 || isTeachforthRepo(name);
 }
 
+const actionHits = new Map();
+const actionLocks = new Map();
+
+export function pace(key, limit, windowMs, now = Date.now()) {
+  const hits = (actionHits.get(key) || []).filter((at) => now - at < windowMs);
+  if (hits.length >= limit) return false;
+  hits.push(now);
+  actionHits.set(key, hits);
+  return true;
+}
+
+function guard(key, limit, windowMs, message) {
+  if (!pace(key, limit, windowMs)) fail(429, message);
+}
+
+function withLock(key, fn) {
+  const prev = actionLocks.get(key) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.then(() => {}, () => {});
+  actionLocks.set(key, tail);
+  tail.finally(() => {
+    if (actionLocks.get(key) === tail) actionLocks.delete(key);
+  });
+  return run;
+}
+
 export async function commitStudentProject(db, user, project, files, options = {}) {
+  guard(`commit:${project.id}`, 1, 8_000, "That project was just saved to GitHub. Wait a few seconds.");
   const owner = options.force
     ? db.prepare("SELECT * FROM users WHERE id = ?").get(project.owner_id)
     : user;
@@ -154,6 +181,7 @@ export async function inspectProject(db, project) {
 }
 
 export async function relinkProject(db, project, fullName) {
+  guard(`relink:${project.id}`, 1, 20_000, "Wait a few seconds before changing the GitHub link again.");
   const [login, repo] = String(fullName || "").trim().split("/");
   if (!login || !repo || !/^[\w.-]+$/.test(login) || !isTeachforthRepo(repo)) {
     fail(400, "Use a public TeachForth repository, like student/TeachForth-name");
@@ -172,6 +200,7 @@ export async function relinkProject(db, project, fullName) {
 }
 
 export async function renameLinkedRepo(db, project, title) {
+  guard(`rename:${project.id}`, 1, 20_000, "Wait a few seconds before renaming the repository again.");
   const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(project.owner_id);
   const [login, repo] = String(project.github_repo || "").split("/");
   if (!owner?.github_token || !login || !repo) fail(400, "This project is not linked to the student's GitHub");
@@ -192,6 +221,7 @@ export async function renameLinkedRepo(db, project, title) {
 
 export async function hydrateProject(db, project) {
   if (project.kind !== "github" || project.open) return project;
+  guard(`hydrate:${project.id}`, 1, 8_000, "That project is already opening.");
   const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(project.owner_id);
   if (!owner?.github_token || !project.github_repo) fail(400, "This project is on GitHub, and the student has not linked an account");
   const [login, repo] = project.github_repo.split("/");
@@ -244,6 +274,7 @@ function connect(ctx) {
 
 function startOauth(ctx, purpose, userId) {
   const { db, req, res, fail } = ctx;
+  guard(`oauth:${userId}:${req.socket?.remoteAddress || "local"}`, 8, 15 * 60 * 1000, "Wait a few minutes before connecting GitHub again.");
   const config = githubConfig(db);
   if (!config.configured) fail(400, "An admin still needs to finish GitHub setup");
   const state = newId();
@@ -316,14 +347,25 @@ async function createMine(ctx) {
 }
 
 export async function createOwnedRepo(ctx, owner, body) {
-  const { db, res, send, fail, audit, user } = ctx;
+  const { fail } = ctx;
   if (!owner?.github_token) fail(400, "Link GitHub first");
   const rawTitle = String(body.title || "").trim().slice(0, 80);
   if (!rawTitle) fail(400, "Name the project");
+  const name = repoNameFor(rawTitle);
+  return withLock(`repo:${owner.id}:${name}`, () => createOwnedRepoOnce(ctx, owner, body, rawTitle, name));
+}
+
+async function createOwnedRepoOnce(ctx, owner, body, rawTitle, name) {
+  const { db, res, send, fail, audit, user } = ctx;
   const title = displayTitle(rawTitle).slice(0, 80);
+  const already = localRepo(db, owner.id, name);
+  if (already) return send(res, 200, { project: ctx.projectView(already, user), reused: true });
+  guard(`create:${owner.id}`, 1, 8_000, "Wait a few seconds before creating another repository.");
+  guard(`create-hour:${owner.id}`, 15, 60 * 60 * 1000, "Too many new repositories this hour. Try again later.");
+  guard("create-site", 60, 10 * 60 * 1000, "Too many repositories are being created right now. Try again in a minute.");
   const template = normalizeTemplate(body.language || body.template);
   const language = projectLanguage(template);
-  const created = await createRepo(owner.github_token, repoNameFor(rawTitle), title);
+  const created = await createRepo(owner.github_token, name, title);
   const now = new Date().toISOString();
   const id = Number(db.prepare(
     `INSERT INTO projects (owner_id, title, language, kind, github_repo, github_url, open, created_at, updated_at)
@@ -340,6 +382,7 @@ export async function createOwnedRepo(ctx, owner, body) {
 
 async function syncMine(ctx) {
   const { db, res, user, send, fail, audit } = ctx;
+  guard(`sync:${user.id}`, 1, 30_000, "Sync just ran. Wait a few seconds.");
   if (user.role !== "student") fail(403, "Only a student can sync repositories");
   if (!user.github_token) fail(400, "Link GitHub first");
   const repos = await listRepos(user.github_token);
@@ -392,6 +435,14 @@ async function listRepos(token) {
     }));
 }
 
+function localRepo(db, ownerId, name) {
+  return db.prepare(
+    `SELECT p.*, u.name AS owner_name FROM projects p
+     JOIN users u ON u.id = p.owner_id
+     WHERE p.owner_id = ? AND p.kind = 'github' AND p.github_repo LIKE ?`,
+  ).all(ownerId, `%/${name}`).find((row) => String(row.github_repo).split("/")[1] === name);
+}
+
 async function createRepo(token, name, description) {
   try {
     return await gh(token, "POST", "/user/repos", {
@@ -402,12 +453,10 @@ async function createRepo(token, name, description) {
     });
   } catch (err) {
     if (err.status !== 422) throw err;
-    return gh(token, "POST", "/user/repos", {
-      name: `${name}-${Date.now().toString(36).slice(-4)}`,
-      description,
-      private: false,
-      auto_init: false,
-    });
+    const me = await gh(token, "GET", "/user");
+    const existing = await gh(token, "GET", `/repos/${me.login}/${encodeURIComponent(name)}`, null, true);
+    if (existing?.full_name) return existing;
+    fail(409, "That repository name is already used. Pick another name.");
   }
 }
 
@@ -462,6 +511,11 @@ async function commitFiles(token, owner, repo, files, message) {
 }
 
 async function gh(token, method, path, body, allowMissing = false) {
+  const id = createHash("sha256").update(String(token)).digest("hex").slice(0, 16);
+  if (!pace(`gh:${id}`, 180, 10 * 60 * 1000)) fail(429, "GitHub is being asked for too much. Wait a minute and try again.");
+  if (method !== "GET" && !pace(`gh-write:${id}`, 120, 10 * 60 * 1000)) {
+    fail(429, "GitHub writes are paused for a minute so this account stays in good standing.");
+  }
   const response = await fetch(`https://api.github.com${path}`, {
     method,
     headers: {

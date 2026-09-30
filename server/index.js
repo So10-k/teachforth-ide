@@ -7,7 +7,7 @@ import { createHub, focus } from "./live.js";
 import { canAccessProject, canSeeStudent, orgRoute, recordRevision, studentsFor as sessionStudents, ROLES } from "./org.js";
 import { hashPassword, verifyPassword, newId, parseCookies, sessionCookie, clearCookie } from "./auth.js";
 import { zipStore } from "./zip.js";
-import { githubRoute, commitStudentProject, hydrateProject, visibleStudentProject, inspectProject, relinkProject, renameLinkedRepo } from "./github.js";
+import { githubRoute, commitStudentProject, hydrateProject, visibleStudentProject, inspectProject, relinkProject, renameLinkedRepo, pace } from "./github.js";
 import { normalizeTemplate, projectLanguage, starterEntries, isHiddenFile } from "./templates.js";
 import { publicSlug, publishedUrl, removeSite, siteFiles, writeSite } from "./publish.js";
 import { endRun, pushLine, startRun, waitLine } from "./runtime.js";
@@ -1000,6 +1000,7 @@ async function liveSignal(req, res, user, id) {
 
 async function publishProject(res, user, project) {
   if (user.role === "student") fail(403, "Only a teacher can publish a project");
+  if (!pace(`publish:${project.id}`, 1, 15_000)) fail(429, "That site was just published. Wait a few seconds.");
   const site = siteFiles(shareableFiles(project.id));
   if (!site.ok) fail(400, site.error);
   const slug = publicSlug(project);

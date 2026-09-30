@@ -1,4 +1,4 @@
-import { displayTitle, isTeachforthRepo, parseTeachforthCode, repoNameFor, teachforthMarker, visibleStudentProject } from "./github.js";
+import { displayTitle, isTeachforthRepo, parseTeachforthCode, pace, repoNameFor, teachforthMarker, visibleStudentProject } from "./github.js";
 import { planSteps } from "./sandbox.js";
 import { rewriteHtml } from "./preview-site.js";
 import { runJava } from "../public/java-lang.js";
@@ -57,6 +57,7 @@ assert(mergeText("abc", "abXc", "abc") === "abXc", "local edit survives an uncha
 assert(mergeText("abc", "abc", "abYc") === "abYc", "remote edit applies when local is unchanged");
 assert(mergeText("hello", "hello Sam", "hello!") === "hello Sam!", "non-overlapping edits both survive");
 assert(mergeText("cat", "dog", "rat") === "dog", "overlapping remote edit does not wipe local typing");
+assert(pace("selftest-create", 1, 60_000) === true && pace("selftest-create", 1, 60_000) === false, "repeated repository creates are paced");
 
 try {
   await waitForHealth();

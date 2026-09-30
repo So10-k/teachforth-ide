@@ -379,19 +379,31 @@ async function githubPage(main, me, api, esc) {
      <h2 class="unit">Public TeachForth repositories</h2>
      ${(repos || []).map((repo) => `<p><a href="${esc(repo.url)}">${esc(repo.fullName)}</a></p>`).join("") || `<p class="muted">None yet. New ones are named TeachForth- and shown here as {TeachForth}.</p>`}`,
   );
-  main.querySelector("#new-repo").onclick = async () => {
+  main.querySelector("#new-repo").onclick = async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
     try {
       const made = await api("/api/github/repos", { method: "POST", body: { title: main.querySelector("#repo-name").value, language: main.querySelector("#repo-lang").value } });
       location.hash = `#/project/${made.project.id}`;
     } catch (err) {
       main.querySelector("#err").textContent = err.message;
+      button.disabled = false;
     }
   };
-  main.querySelector("#sync").onclick = async () => {
-    await api("/api/github/sync", { method: "POST", body: {} });
-    const fresh = await api("/api/me");
-    me.githubLogin = fresh.user.githubLogin;
-    githubPage(main, fresh.user, api, esc);
+  main.querySelector("#sync").onclick = async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      await api("/api/github/sync", { method: "POST", body: {} });
+      const fresh = await api("/api/me");
+      me.githubLogin = fresh.user.githubLogin;
+      githubPage(main, fresh.user, api, esc);
+    } catch (err) {
+      main.querySelector("#err").textContent = err.message;
+      button.disabled = false;
+    }
   };
   for (const button of main.querySelectorAll("[data-id]")) {
     button.onclick = () => { location.hash = `#/project/${button.dataset.id}`; };
@@ -580,11 +592,14 @@ async function personPage(main, id, me, api, esc, ago) {
   };
   const repo = main.querySelector("#new-student-repo");
   if (repo) repo.onclick = async () => {
+    if (repo.disabled) return;
+    repo.disabled = true;
     try {
       const made = await api(`/api/folders/${id}/repos`, { method: "POST", body: { title: main.querySelector("#repo-name").value, language: main.querySelector("#repo-lang").value } });
       location.hash = `#/project/${made.project.id}`;
     } catch (err) {
       main.querySelector("#repo-err").textContent = err.message;
+      repo.disabled = false;
     }
   };
   const savePerson = main.querySelector("#save-person");
