@@ -545,17 +545,20 @@ async function personPage(main, id, me, api, esc, ago) {
       ${profile.canOpenSandbox ? `<div class="row"><input id="box-name" placeholder="New sandbox">${templateSelect("box-lang")}<button class="btn" id="new-box">Create</button></div>` : ""}
       <div class="cards">${profile.sandboxes.map((project) => `<article class="card"><h3>${esc(project.title)}</h3><p class="muted">${esc(project.language)}</p>${profile.canOpenSandbox ? `<button class="btn" data-id="${project.id}">Open</button>` : `<span class="muted">Only an admin or the owner can open this.</span>`}</article>`).join("") || `<p class="muted">No sandbox yet.</p>`}</div></section>` : "";
   const libraryBlock = folder ? `<section>${library(folder, esc, folder.canOpen)}</section>` : "";
-  const reports = folder && staff ? `<aside><h2 class="unit">Session reports</h2>
-      ${folder.canOpen ? `<section class="panel"><p class="muted">The student never sees this. The diff is their code since the previous report. A skill mark links the project on the pathway.</p><textarea id="report-body" placeholder="What did you work on?"></textarea>
-        <div id="skill-rows"></div><button class="btn-ghost" id="add-skill" type="button">Add skill</button>
-        <pre class="diff">${esc(folder.preview || "")}</pre><button class="btn" id="save-report">Save report</button><p class="error" id="report-err"></p></section>` : `<p class="muted">A new report can be written when this student is in a live session with you.</p>`}
-      <div class="timeline">${(folder.reports || []).map((report) => `<article class="panel"><strong>${esc(report.authorName)}</strong> <span class="muted">${esc(String(report.createdAt).replace("T", " ").slice(0, 16))}</span><p>${esc(report.body)}</p><div class="chips">${(report.skills || []).map((skill) => `<span class="chip ${esc(skill.level)}">${esc(skill.moduleTitle)} · ${esc(skill.course)} · ${esc(skill.level)}${skill.projectTitle ? ` · ${skill.projectTitle}` : ""}</span>`).join("")}</div><pre class="diff">${esc(report.diff)}</pre></article>`).join("") || `<p class="muted">No reports yet.</p>`}</div>
-      ${folder.githubLogin && folder.canOpen && me.role !== "student" ? `<section class="panel"><h2>Start a repository</h2><p class="muted">This uses the student's GitHub account. Only the student can commit.</p><div class="row"><input id="repo-name" placeholder="Project name">${templateSelect("repo-lang")}<button class="btn" id="new-student-repo">Create</button></div><p class="error" id="repo-err"></p></section>` : ""}
-    </aside>` : `<aside class="panel"><h2>Access</h2><p>${esc(profile.access)}</p>${person.role === "student" && me.id === person.id ? `<a class="btn" href="#/github">GitHub</a>` : ""}</aside>`;
-  main.innerHTML = page("", "", `${head}${pathway ? pathwaySection(pathway, esc) : ""}<div class="split">${libraryBlock}${sandbox}${manage ? "" : ""}${reports}</div>${manage}`);
+  const reports = folder && staff ? "" : `<aside class="panel"><h2>Access</h2><p>${esc(profile.access)}</p>${person.role === "student" && me.id === person.id ? `<a class="btn" href="#/github">GitHub</a>` : ""}</aside>`;
+  const studentView = person.role === "student" && folder;
+  main.innerHTML = page("", "", studentView
+    ? studentProfile({ profile, person, folder, pathway, staff, me, esc, manage })
+    : `${head}${pathway ? pathwaySection(pathway, esc) : ""}<div class="split">${libraryBlock}${sandbox}${manage ? "" : ""}${reports}</div>${manage}`);
   main.querySelector(".page-head").hidden = true;
+  if (studentView) bindProfileTabs(main, location.hash.split("/")[3] || "library");
+  const reload = () => {
+    const tab = main.querySelector("[data-profile-tab].on")?.dataset.profileTab;
+    if (tab) history.replaceState(null, "", `#/person/${id}/${tab}`);
+    personPage(main, id, me, api, esc, ago);
+  };
   bindProfiles(main);
-  bindPathway(main, id, api, () => personPage(main, id, me, api, esc, ago));
+  bindPathway(main, id, api, reload);
   bindSkillRows(main, pathway, folder, esc);
   const save = main.querySelector("#save-report");
   if (save) save.onclick = async () => {
@@ -565,7 +568,7 @@ async function personPage(main, id, me, api, esc, ago) {
         method: "POST",
         body: { body: main.querySelector("#report-body").value, skills: skillPayload(main) },
       });
-      personPage(main, id, me, api, esc, ago);
+      reload();
     } catch (error) {
       if (err) err.textContent = error.message;
     }
@@ -588,7 +591,7 @@ async function personPage(main, id, me, api, esc, ago) {
   if (savePerson) savePerson.onclick = async () => {
     try {
       await api(`/api/users/${id}`, { method: "PATCH", body: { name: main.querySelector("#person-name").value, email: main.querySelector("#person-email").value, role: main.querySelector("#person-role").value } });
-      personPage(main, id, me, api, esc, ago);
+      reload();
     } catch (err) {
       main.querySelector("#manage-err").textContent = err.message;
     }
@@ -614,16 +617,87 @@ async function personPage(main, id, me, api, esc, ago) {
   };
 }
 
+function studentProfile({ profile, person, folder, pathway, staff, me, esc, manage }) {
+  const tabs = [
+    ["library", "Library", (folder.projects || []).length],
+    staff && pathway ? ["pathway", "Pathway", (pathway.courses || []).length] : null,
+    staff ? ["reports", "Reports", (folder.reports || []).length] : null,
+    profile.canManage ? ["account", "Account", ""] : null,
+  ].filter(Boolean);
+  const tabBar = tabs.length > 1 ? `<nav class="profile-tabs">${tabs.map(([id, label, count]) => `<button type="button" data-profile-tab="${id}">${label}${count === "" ? "" : ` <span>${count}</span>`}</button>`).join("")}</nav>` : "";
+  const libraryPane = `<section data-profile-pane="library">
+      <div class="row"><input id="library-search" placeholder="Search projects" aria-label="Search projects"></div>
+      <div id="library-list">${libraryRows(folder, esc, folder.canOpen)}</div>
+      ${folder.githubLogin && folder.canOpen && me.role !== "student" ? `<section class="panel"><h2>Start a repository</h2><p class="muted">This uses the student's GitHub account. Only the student can commit.</p><div class="row"><input id="repo-name" placeholder="Project name">${templateSelect("repo-lang")}<button class="btn" id="new-student-repo">Create</button></div><p class="error" id="repo-err"></p></section>` : ""}
+      ${person.id === me.id ? `<p><a class="btn" href="#/github">${person.githubLogin ? "GitHub" : "Connect GitHub"}</a></p>` : ""}
+    </section>`;
+  const reportPane = staff ? `<section data-profile-pane="reports" hidden>
+      ${folder.canOpen ? `<section class="panel"><h2>New report</h2><p class="muted">The student never sees this. The diff is code since the previous report.</p><textarea id="report-body" placeholder="What did you work on?"></textarea>
+        <div id="skill-rows"></div><button class="btn-ghost" id="add-skill" type="button">Add skill</button>
+        <details><summary>Code changes</summary><pre class="diff">${esc(folder.preview || "")}</pre></details>
+        <button class="btn" id="save-report">Save report</button><p class="error" id="report-err"></p></section>` : `<p class="muted">A new report can be written when this student is in a live session with you.</p>`}
+      <div class="timeline">${reportList(folder, esc)}</div>
+    </section>` : "";
+  const accountPane = profile.canManage ? `<section data-profile-pane="account" hidden>${manage}</section>` : "";
+  return `${profileHeadHtml(person, profile, esc, staff, folder)}${tabBar}${libraryPane}${staff && pathway ? `<section data-profile-pane="pathway" hidden>${pathwaySection(pathway, esc)}</section>` : ""}${reportPane}${accountPane}`;
+}
+
+function profileHeadHtml(person, profile, esc, staff, folder) {
+  return `<section class="profile"><div class="cover"></div><div class="profile-row">
+      <span class="avatar lg">${person.githubAvatar ? `<img src="${esc(person.githubAvatar)}" alt="">` : esc((person.name || "?").slice(0, 1))}</span>
+      <div><h1>${esc(person.name)}</h1><p class="muted">${esc(person.email)}</p>
+        <div class="chips"><span class="chip">${esc(roleName(person.role))}</span>${profile.chapters.map((chapter) => `<span class="chip">${esc(chapter.name)}</span>`).join("")}${profile.staffChapters.map((chapter) => `<span class="chip">Leads ${esc(chapter.name)}</span>`).join("")}${person.githubLogin ? `<span class="chip">@${esc(person.githubLogin)}</span>` : ""}${staff && folder && !folder.canOpen ? `<span class="chip">Not in a live session</span>` : ""}</div>
+      </div>
+    </div></section>`;
+}
+
+function libraryRows(folder, esc, canOpen) {
+  return (folder.projects || []).map((project) => `<article class="lib-row" data-title="${esc((project.title || "").toLowerCase())}"><div><h3>${esc(project.title)}</h3><p class="muted">${project.kind === "github" ? (project.open ? "Open for class" : "On GitHub") : esc(project.kind || "project")}</p></div>${canOpen ? `<button class="btn" data-id="${project.id}">Open</button>` : `<span class="muted">Live session</span>`}</article>`).join("") || `<p class="muted">No projects yet.</p>`;
+}
+
+function reportList(folder, esc) {
+  return (folder.reports || []).map((report) => {
+    const when = esc(String(report.createdAt).replace("T", " ").slice(0, 16));
+    const skills = (report.skills || []).map((skill) => `<span class="chip ${esc(skill.level)}">${esc(skill.moduleTitle)} · ${esc(skill.level)}</span>`).join("");
+    return `<details class="panel report-row"><summary><strong>${esc(report.authorName)}</strong> <span class="muted">${when}</span> <span>${esc(String(report.body || "").slice(0, 72))}</span></summary><p>${esc(report.body)}</p><div class="chips">${skills}</div><pre class="diff">${esc(report.diff)}</pre></details>`;
+  }).join("") || `<p class="muted">No reports yet.</p>`;
+}
+
+function bindProfileTabs(main, requested) {
+  const buttons = [...main.querySelectorAll("[data-profile-tab]")];
+  const panes = [...main.querySelectorAll("[data-profile-pane]")];
+  const show = (id) => {
+    const next = panes.some((pane) => pane.dataset.profilePane === id) ? id : "library";
+    for (const button of buttons) button.classList.toggle("on", button.dataset.profileTab === next);
+    for (const pane of panes) pane.hidden = pane.dataset.profilePane !== next;
+    const search = main.querySelector("#library-search");
+    if (next === "library" && search) search.focus();
+  };
+  for (const button of buttons) button.onclick = () => show(button.dataset.profileTab);
+  show(requested);
+  const search = main.querySelector("#library-search");
+  if (search) search.oninput = () => {
+    const q = search.value.trim().toLowerCase();
+    for (const row of main.querySelectorAll(".lib-row")) row.hidden = Boolean(q) && !row.dataset.title.includes(q);
+  };
+}
+
 function pathwaySection(pathway, esc) {
   const courses = new Set(pathway.courses || []);
   const checks = ["python", "java", "c"].map((course) => `<label class="check"><input type="checkbox" data-course value="${course}" ${courses.has(course) ? "checked" : ""}> ${course === "python" ? "Python" : course === "java" ? "Java" : "C"}</label>`).join("");
-  const boards = (pathway.pathways || []).map((board) => `<section class="panel pathway"><h2>${esc(board.name)}</h2>
+  const switcher = (pathway.pathways || []).map((board, index) => `<button type="button" class="course-tab ${index ? "" : "on"}" data-course-tab="${esc(board.course)}">${esc(board.name)}</button>`).join("");
+  const boards = (pathway.pathways || []).map((board, index) => {
+    const mods = board.units.flatMap((unit) => unit.modules || []);
+    const count = (status) => mods.filter((mod) => mod.status === status).length;
+    return `<section class="panel pathway" data-course-pane="${esc(board.course)}" ${index ? "hidden" : ""}>
+      <div class="row"><h2>${esc(board.name)}</h2><span class="chip mastered">${count("mastered")} mastered</span><span class="chip practiced">${count("practiced")} practiced</span><span class="chip linked">${count("linked")} linked</span><label class="check"><input type="checkbox" class="progress-only"> Progress only</label></div>
       <input class="pathway-search" placeholder="Search modules" aria-label="Search ${esc(board.name)} modules">
       ${(board.units || []).map((unit) => `<details class="unit-block"><summary>${esc(unit.title)}</summary>
-        ${(unit.modules || []).map((mod) => `<div class="mod-row" data-mod data-title="${esc(mod.title.toLowerCase())}"><span>${esc(mod.title)}</span>${mod.focus ? `<span class="chip">${esc(mod.focus)}</span>` : ""}<span class="chip ${esc(mod.status)}">${esc(mod.status)}</span>${(mod.projects || []).map((project) => project.url ? `<a href="${esc(project.url)}">${esc(project.title)}</a>` : `<span class="muted">${esc(project.title)}</span>`).join("")}</div>`).join("")}
+        ${(unit.modules || []).map((mod) => `<div class="mod-row" data-mod data-status="${esc(mod.status)}" data-title="${esc(mod.title.toLowerCase())}"><span>${esc(mod.title)}</span>${mod.focus ? `<span class="chip">${esc(mod.focus)}</span>` : ""}<span class="chip ${esc(mod.status)}">${esc(mod.status)}</span>${(mod.projects || []).map((project) => project.url ? `<a href="${esc(project.url)}">${esc(project.title)}</a>` : `<span class="muted">${esc(project.title)}</span>`).join("")}</div>`).join("")}
       </details>`).join("")}
-    </section>`).join("");
-  return `<section class="panel"><h2>Courses</h2><p class="muted">Teachers assign Python, Java, and C. Students never see this pathway or the skill marks.</p><div class="row">${checks}<button class="btn" id="save-courses" type="button">Save courses</button></div><p class="error" id="course-err"></p></section>${boards || `<section class="panel"><p class="muted">No course assigned yet.</p></section>`}`;
+    </section>`;
+  }).join("");
+  return `<section class="panel"><h2>Courses</h2><p class="muted">Assign one or more. Students never see this.</p><div class="row">${checks}<button class="btn" id="save-courses" type="button">Save courses</button></div><p class="error" id="course-err"></p></section>${switcher ? `<div class="tabs course-tabs">${switcher}</div>` : ""}${boards || `<section class="panel"><p class="muted">No course assigned yet.</p></section>`}`;
 }
 
 function bindPathway(main, id, api, again) {
@@ -640,17 +714,31 @@ function bindPathway(main, id, api, again) {
       if (err) err.textContent = error.message;
     }
   };
-  for (const input of main.querySelectorAll(".pathway-search")) {
-    input.oninput = () => {
-      const q = input.value.trim().toLowerCase();
-      const panel = input.closest(".pathway");
-      for (const row of panel.querySelectorAll("[data-mod]")) row.hidden = Boolean(q) && !row.dataset.title.includes(q);
+  for (const button of main.querySelectorAll("[data-course-tab]")) {
+    button.onclick = () => {
+      for (const tab of main.querySelectorAll("[data-course-tab]")) tab.classList.toggle("on", tab === button);
+      for (const pane of main.querySelectorAll("[data-course-pane]")) pane.hidden = pane.dataset.coursePane !== button.dataset.courseTab;
+    };
+  }
+  for (const panel of main.querySelectorAll(".pathway")) {
+    const apply = () => {
+      const q = panel.querySelector(".pathway-search")?.value.trim().toLowerCase() || "";
+      const only = panel.querySelector(".progress-only")?.checked;
+      for (const row of panel.querySelectorAll("[data-mod]")) {
+        const titleOk = !q || row.dataset.title.includes(q);
+        const progressOk = !only || row.dataset.status !== "none";
+        row.hidden = !(titleOk && progressOk);
+      }
       for (const unit of panel.querySelectorAll(".unit-block")) {
         const visible = [...unit.querySelectorAll("[data-mod]")].some((row) => !row.hidden);
         unit.hidden = !visible;
-        if (q && visible) unit.open = true;
+        if ((q || only) && visible) unit.open = true;
       }
     };
+    const search = panel.querySelector(".pathway-search");
+    const only = panel.querySelector(".progress-only");
+    if (search) search.oninput = apply;
+    if (only) only.onchange = apply;
   }
 }
 

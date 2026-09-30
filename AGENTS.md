@@ -21,7 +21,7 @@ Do not run `deploy/install-on-vm.sh` on the shared prod machine. It is for the A
 - Only a teacher who can open a project can publish it. Publish copies static files, never `.teachforth`, to the prod host at `teachforthprojects.samsprojects.xyz`. Students cannot publish. Do not store a published site only on the Azure VM, because that VM turns off.
 - Python runs in the browser via Pyodide. C and C++ run in the browser through a teaching interpreter. Java runs in the browser through the teaching runner in `public/java-lang.js`. Do not execute student code on the server, and do not shell out to gcc, g++, or java.
 - No new npm dependencies. The server uses Node 24 built-ins, including `node:sqlite`.
-- The portal stays the blue TeachForth shell. The editor is a dark VS Code-style view: opened tabs only, explorer for the rest, hidden `.teachforth`. Do not reset the editor from a poll or save while the user is typing. CodeMirror close-brackets, close-tags, and completion stay vendored. No new npm dependencies.
+- The portal stays the blue TeachForth shell. A student profile uses tabs (Library, Pathway, Reports) so the curriculum and report diffs are not one long scroll. The editor is a dark VS Code-style view: opened tabs only, explorer for the rest, hidden `.teachforth`. Ctrl/Cmd+/ toggles a line comment for the open file's language (`#`, `//`, `/* */`, or `<!-- -->`). Do not reset the editor from a poll or save while the user is typing. CodeMirror close-brackets, close-tags, and completion stay vendored. No new npm dependencies.
 
 ## Shutdown
 

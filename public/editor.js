@@ -119,7 +119,7 @@ export async function openEditor({ app, id, me, api, esc }) {
     const name = prompt("Folder name, like src");
     if (name) createPath(`${name.replace(/\/+$/, "")}/untitled.txt`);
   };
-  if (teacher) document.querySelector("#report-btn").onclick = () => { location.hash = `#/person/${opened.project.ownerId}`; };
+  if (teacher) document.querySelector("#report-btn").onclick = () => { location.hash = `#/person/${opened.project.ownerId}/reports`; };
   const guideBtn = document.querySelector("#guide-btn");
   if (guideBtn) guideBtn.onclick = () => toggleGuide();
   connectLive();
@@ -318,6 +318,10 @@ function mountEditor() {
       event.preventDefault();
       flush();
     }
+    if ((event.metaKey || event.ctrlKey) && event.key === "/") {
+      event.preventDefault();
+      toggleComment();
+    }
   });
   if (!window.CodeMirror) {
     area.focus();
@@ -337,6 +341,8 @@ function mountEditor() {
       "Cmd-Enter": () => run(),
       "Ctrl-S": () => flush(),
       "Cmd-S": () => flush(),
+      "Ctrl-/": () => toggleComment(),
+      "Cmd-/": () => toggleComment(),
       "Ctrl-Space": "autocomplete",
       "Alt-Space": "autocomplete",
       Tab: (cm) => {
@@ -430,6 +436,99 @@ function clampPos(pos, maxLine) {
   const line = Math.max(0, Math.min(pos?.line || 0, maxLine));
   const text = cmEditor.getLine(line) || "";
   return { line, ch: Math.max(0, Math.min(pos?.ch || 0, text.length)) };
+}
+
+function commentStyle(path) {
+  const name = String(path || "").toLowerCase();
+  if (/\.(html?|xml|svg|md)$/.test(name)) return { kind: "wrap", open: "<!--", close: "-->" };
+  if (name.endsWith(".css")) return { kind: "wrap", open: "/*", close: "*/" };
+  if (/\.(java|c|h|cpp|cc|cxx|hpp|js|mjs|json|ts|tsx)$/.test(name)) return { kind: "line", mark: "//" };
+  return { kind: "line", mark: "#" };
+}
+
+function isLineCommented(text, style) {
+  const body = text.trim();
+  if (!body) return false;
+  if (style.kind === "line") return body.startsWith(style.mark);
+  return body.startsWith(style.open) && body.endsWith(style.close);
+}
+
+function commentLine(text, style) {
+  const indent = text.match(/^\s*/)[0];
+  const rest = text.slice(indent.length);
+  if (style.kind === "line") return rest ? `${indent}${style.mark} ${rest}` : `${indent}${style.mark}`;
+  return rest ? `${indent}${style.open} ${rest} ${style.close}` : `${indent}${style.open} ${style.close}`;
+}
+
+function uncommentLine(text, style) {
+  const indent = text.match(/^\s*/)[0];
+  let rest = text.slice(indent.length);
+  if (style.kind === "line") {
+    if (!rest.startsWith(style.mark)) return text;
+    rest = rest.slice(style.mark.length);
+    if (rest.startsWith(" ")) rest = rest.slice(1);
+    return indent + rest;
+  }
+  if (rest.startsWith(style.open)) rest = rest.slice(style.open.length).replace(/^ /, "");
+  if (rest.endsWith(style.close)) rest = rest.slice(0, -style.close.length).replace(/ $/, "");
+  return indent + rest;
+}
+
+function toggleComment() {
+  if (!editorState?.active) return;
+  const style = commentStyle(editorState.active);
+  if (cmEditor) toggleCmComment(cmEditor, style);
+  else toggleAreaComment(style);
+  markDirty();
+}
+
+function selectionLines(anchor, head) {
+  let from = Math.min(anchor.line, head.line);
+  let to = Math.max(anchor.line, head.line);
+  const end = anchor.line > head.line ? anchor : head;
+  if (from !== to && end.ch === 0) to -= 1;
+  return [from, Math.max(from, to)];
+}
+
+function toggleCmComment(cm, style) {
+  const lines = [...new Set(cm.listSelections().flatMap((sel) => {
+    const [from, to] = selectionLines(sel.anchor, sel.head);
+    return Array.from({ length: to - from + 1 }, (_, index) => from + index);
+  }))].sort((a, b) => a - b);
+  if (!lines.length) return;
+  const texts = lines.map((line) => cm.getLine(line) || "");
+  const content = texts.filter((text) => text.trim());
+  const uncomment = content.length > 0 && content.every((text) => isLineCommented(text, style));
+  cm.operation(() => {
+    for (const line of lines) {
+      const text = cm.getLine(line) || "";
+      const next = uncomment ? (text.trim() ? uncommentLine(text, style) : text) : commentLine(text, style);
+      if (next !== text) cm.replaceRange(next, { line, ch: 0 }, { line, ch: text.length });
+    }
+  });
+}
+
+function toggleAreaComment(style) {
+  const area = document.querySelector("#code");
+  if (!area) return;
+  const value = area.value;
+  const start = area.selectionStart || 0;
+  const end = area.selectionEnd || 0;
+  const lines = value.split("\n");
+  const from = value.slice(0, start).split("\n").length - 1;
+  let to = value.slice(0, end).split("\n").length - 1;
+  if (start !== end && end > 0 && value[end - 1] === "\n") to -= 1;
+  to = Math.max(from, to);
+  const chosen = lines.slice(from, to + 1);
+  const content = chosen.filter((text) => text.trim());
+  const uncomment = content.length > 0 && content.every((text) => isLineCommented(text, style));
+  for (let line = from; line <= to; line += 1) {
+    lines[line] = uncomment ? (lines[line].trim() ? uncommentLine(lines[line], style) : lines[line]) : commentLine(lines[line], style);
+  }
+  area.value = lines.join("\n");
+  const newStart = lines.slice(0, from).join("\n").length + (from ? 1 : 0);
+  area.selectionStart = newStart;
+  area.selectionEnd = lines.slice(0, to + 1).join("\n").length;
 }
 
 function modeOf(path) {
