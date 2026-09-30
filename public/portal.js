@@ -20,18 +20,27 @@ function page(title, sub, body) {
 async function homePage(main, me, api, esc, powerUrl) {
   if (me.role === "student") {
     const data = await api(`/api/folders/${me.id}`);
+    const linked = Boolean(me.githubLinked);
+    const connectLabel = me.githubLogin ? "Link GitHub again" : "Connect GitHub";
+    const callout = linked ? "" : `<section class="github-callout"><div><h2>GitHub is required</h2><p>${me.githubLogin ? `The link to @${esc(me.githubLogin)} stopped working. Link it again before you open or save a project.` : "Connect GitHub before class. That account becomes this TeachForth account, and every project is saved there."}</p></div><a class="btn" href="/api/github/connect">${connectLabel}</a></section>`;
     main.innerHTML = page(
       `Hello, ${esc(me.name.split(" ")[0])}`,
-      "Your work lives on GitHub. TeachForth only keeps a project while it is open.",
-      `${profileHead(data, esc, false)}
+      linked ? `Projects are saved to @${esc(me.githubLogin)}. TeachForth only keeps one while it is open.` : "Connect GitHub first. A project cannot be saved without it.",
+      `${callout}
+       ${profileHead(data, esc, false)}
+       <div class="row" style="justify-content:space-between;align-items:center"><h2 class="unit" style="margin:0">Your projects</h2><button class="btn" id="new-project" type="button">New project</button></div>
        <div class="split">
-         <section>${library(data, esc, true)}</section>
-         <aside class="panel"><h2>GitHub</h2><p>${me.githubLogin ? `This account is <strong>@${esc(me.githubLogin)}</strong>.` : "Connect GitHub. That account becomes this TeachForth account."}</p>
-           <a class="btn" href="#/github">${me.githubLogin ? "Repositories" : "Connect GitHub"}</a>
+         <section>${library(data, esc, true, false)}</section>
+         <aside class="panel"><h2>GitHub</h2><p>${linked ? `Connected as <strong>@${esc(me.githubLogin)}</strong>. This link is required.` : "Not connected. Students cannot save work until GitHub is linked."}</p>
+           <div class="stack">
+             <a class="btn" href="/api/github/connect">${connectLabel}</a>
+             <a class="btn-ghost" href="#/github">Repositories</a>
+           </div>
          </aside>
        </div>`,
     );
     bindProfiles(main);
+    main.querySelector("#new-project").onclick = () => openNewProject(me, api, esc);
     return;
   }
   const home = await api("/api/home");
@@ -362,35 +371,33 @@ async function githubPage(main, me, api, esc) {
     return;
   }
   const error = location.hash.includes("error=1") ? `<p class="error">GitHub did not connect. Ask an admin to check the OAuth app.</p>` : "";
-  if (!me.githubLogin) {
-    main.innerHTML = page("GitHub", "Your TeachForth account becomes this GitHub account.", `${error}<a class="btn" href="/api/github/connect">Connect GitHub</a>`);
+  const connectLabel = me.githubLogin ? "Link GitHub again" : "Connect GitHub";
+  const connect = `<a class="btn" href="/api/github/connect">${connectLabel}</a>`;
+  if (!me.githubLinked) {
+    main.innerHTML = page(
+      "GitHub",
+      me.githubLogin ? `The saved link to @${esc(me.githubLogin)} needs to be refreshed.` : "Your TeachForth account becomes this GitHub account. This is required.",
+      `${error}<section class="github-callout"><div><h2>${connectLabel}</h2><p>Sync and new projects both need a working GitHub link. Use this button. Sync cannot do it for you.</p></div>${connect}</section>`,
+    );
     return;
   }
-  const [{ repos }, { projects }] = await Promise.all([
-    api("/api/github/repos").catch(() => ({ repos: [] })),
-    api("/api/projects"),
-  ]);
+  let repos = [];
+  let repoError = "";
+  try {
+    repos = (await api("/api/github/repos")).repos || [];
+  } catch (err) {
+    repoError = err.message;
+  }
+  const { projects } = await api("/api/projects");
   const face = me.githubAvatar ? `<img class="avatar lg" src="${esc(me.githubAvatar)}" alt="">` : "";
   main.innerHTML = page(
     "GitHub",
-    `This TeachForth account is @${esc(me.githubLogin)}. Only public TeachForth- repositories are used. Closing one commits it.`,
-    `${error}<div class="row">${face}<input id="repo-name" placeholder="New project name">${templateSelect("repo-lang")}<button class="btn" id="new-repo">Create {TeachForth} repository</button><button class="btn-ghost" id="sync">Sync</button></div><p class="error" id="err"></p>
-     <div class="cards">${(projects.projects || []).map((project) => `<article class="card"><h3>${esc(project.title)}</h3><p class="muted">${project.open ? "Open for class" : "On GitHub"}</p><button class="btn" data-id="${project.id}">Open</button></article>`).join("") || `<p class="muted">No {TeachForth} projects yet.</p>`}</div>
+    `This TeachForth account is @${esc(me.githubLogin)}. Only public TeachForth- repositories are used. New projects start from Home.`,
+    `${error}<section class="panel"><div class="row">${face}<div><strong>@${esc(me.githubLogin)}</strong><p class="muted">Required to save and sync. If GitHub asks you to link again, use the button. It is always here.</p></div></div><div class="row">${connect}<button class="btn-ghost" id="sync" type="button">Sync</button></div><p class="error" id="err">${esc(repoError)}</p></section>
+     <div class="cards">${(projects.projects || []).map((project) => `<article class="card"><h3>${esc(project.title)}</h3><p class="muted">${project.open ? "Open for class" : "On GitHub"}</p><button class="btn" data-id="${project.id}">Open</button></article>`).join("") || `<p class="muted">No {TeachForth} projects yet. Start one from Home.</p>`}</div>
      <h2 class="unit">Public TeachForth repositories</h2>
      ${(repos || []).map((repo) => `<p><a href="${esc(repo.url)}">${esc(repo.fullName)}</a></p>`).join("") || `<p class="muted">None yet. New ones are named TeachForth- and shown here as {TeachForth}.</p>`}`,
   );
-  main.querySelector("#new-repo").onclick = async (event) => {
-    const button = event.currentTarget;
-    if (button.disabled) return;
-    button.disabled = true;
-    try {
-      const made = await api("/api/github/repos", { method: "POST", body: { title: main.querySelector("#repo-name").value, language: main.querySelector("#repo-lang").value } });
-      location.hash = `#/project/${made.project.id}`;
-    } catch (err) {
-      main.querySelector("#err").textContent = err.message;
-      button.disabled = false;
-    }
-  };
   main.querySelector("#sync").onclick = async (event) => {
     const button = event.currentTarget;
     if (button.disabled) return;
@@ -399,6 +406,8 @@ async function githubPage(main, me, api, esc) {
       await api("/api/github/sync", { method: "POST", body: {} });
       const fresh = await api("/api/me");
       me.githubLogin = fresh.user.githubLogin;
+      me.githubLinked = fresh.user.githubLinked;
+      me.githubAvatar = fresh.user.githubAvatar;
       githubPage(main, fresh.user, api, esc);
     } catch (err) {
       main.querySelector("#err").textContent = err.message;
@@ -408,6 +417,44 @@ async function githubPage(main, me, api, esc) {
   for (const button of main.querySelectorAll("[data-id]")) {
     button.onclick = () => { location.hash = `#/project/${button.dataset.id}`; };
   }
+}
+
+function openNewProject(me, api, esc) {
+  document.querySelector(".backdrop")?.remove();
+  document.querySelector(".modal")?.remove();
+  const backdrop = document.createElement("div");
+  backdrop.className = "backdrop";
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  const connectLabel = me.githubLogin ? "Link GitHub again" : "Connect GitHub";
+  if (!me.githubLinked) {
+    modal.innerHTML = `<h2>Connect GitHub first</h2><p>A project is a public repository on your GitHub account. Link that account, then create the project.</p><div class="row"><a class="btn" href="/api/github/connect">${connectLabel}</a><button class="btn-ghost" id="cancel" type="button">Cancel</button></div>`;
+  } else {
+    modal.innerHTML = `<h2>New project</h2><p class="muted">Creates a public {TeachForth} repository on @${esc(me.githubLogin)}.</p><label>Name<input id="repo-name" placeholder="Project name"></label><label>Type${templateSelect("repo-lang")}</label><p class="error" id="err"></p><div class="row"><button class="btn" id="create" type="button">Create</button><button class="btn-ghost" id="cancel" type="button">Cancel</button></div>`;
+  }
+  document.body.append(backdrop, modal);
+  const close = () => { backdrop.remove(); modal.remove(); };
+  backdrop.onclick = close;
+  modal.querySelector("#cancel").onclick = close;
+  modal.querySelector("#repo-name")?.focus();
+  const create = modal.querySelector("#create");
+  if (!create) return;
+  create.onclick = async () => {
+    if (create.disabled) return;
+    create.disabled = true;
+    try {
+      const made = await api("/api/github/repos", { method: "POST", body: { title: modal.querySelector("#repo-name").value, language: modal.querySelector("#repo-lang").value } });
+      close();
+      location.hash = `#/project/${made.project.id}`;
+    } catch (err) {
+      const errEl = modal.querySelector("#err");
+      errEl.textContent = err.message;
+      if (/link github/i.test(err.message) && !modal.querySelector("a[href='/api/github/connect']")) {
+        errEl.insertAdjacentHTML("afterend", `<p><a class="btn" href="/api/github/connect">Link GitHub again</a></p>`);
+      }
+      create.disabled = false;
+    }
+  };
 }
 
 async function centerPage(main, api, esc) {
@@ -447,8 +494,9 @@ function profileHead(data, esc, staff) {
   </section>`;
 }
 
-function library(data, esc, canOpen) {
-  return `<h2 class="unit">Code library</h2><div class="cards">${(data.projects || []).map((project) => `<article class="card"><h3>${esc(project.title)}</h3><p class="muted">${project.kind === "github" ? (project.open ? "Open for class" : "Stored on GitHub") : esc(project.kind || "project")}</p>${canOpen ? `<button class="btn" data-id="${project.id}">Open</button>` : `<span class="muted">Open during a live session</span>`}</article>`).join("") || `<p class="muted">No projects yet.</p>`}</div>`;
+function library(data, esc, canOpen, heading = true) {
+  const title = heading ? `<h2 class="unit">Code library</h2>` : "";
+  return `${title}<div class="cards">${(data.projects || []).map((project) => `<article class="card"><h3>${esc(project.title)}</h3><p class="muted">${project.kind === "github" ? (project.open ? "Open for class" : "Stored on GitHub") : esc(project.kind || "project")}</p>${canOpen ? `<button class="btn" data-id="${project.id}">Open</button>` : `<span class="muted">Open during a live session</span>`}</article>`).join("") || `<p class="muted">No projects yet.</p>`}</div>`;
 }
 
 function userRows(users, esc) {
@@ -644,7 +692,7 @@ function studentProfile({ profile, person, folder, pathway, staff, me, esc, mana
       <div class="row"><input id="library-search" placeholder="Search projects" aria-label="Search projects"></div>
       <div id="library-list">${libraryRows(folder, esc, folder.canOpen)}</div>
       ${folder.githubLogin && folder.canOpen && me.role !== "student" ? `<section class="panel"><h2>Start a repository</h2><p class="muted">This uses the student's GitHub account. Only the student can commit.</p><div class="row"><input id="repo-name" placeholder="Project name">${templateSelect("repo-lang")}<button class="btn" id="new-student-repo">Create</button></div><p class="error" id="repo-err"></p></section>` : ""}
-      ${person.id === me.id ? `<p><a class="btn" href="#/github">${person.githubLogin ? "GitHub" : "Connect GitHub"}</a></p>` : ""}
+      ${person.id === me.id ? `<p><a class="btn" href="${me.githubLinked ? "#/github" : "/api/github/connect"}">${me.githubLinked ? "GitHub" : (person.githubLogin ? "Link GitHub again" : "Connect GitHub")}</a></p>` : ""}
     </section>`;
   const reportPane = staff ? `<section data-profile-pane="reports" hidden>
       ${folder.canOpen ? `<section class="panel"><h2>New report</h2><p class="muted">The student never sees this. The diff is code since the previous report.</p><textarea id="report-body" placeholder="What did you work on?"></textarea>

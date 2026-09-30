@@ -57,6 +57,7 @@ kbd { font-family: var(--sans); font-size: 12px; opacity: .8; margin-left: 6px; 
   font-weight: 600;
 }
 .side a.on { background: var(--select); color: var(--select-ink); }
+.side a.need { background: #fff4df; color: #8a5a00; }
 .main { padding: 28px 32px 64px; min-width: 0; }
 h1 { font-family: var(--display); font-size: 28px; margin: 0 0 16px; letter-spacing: -0.03em; }
 .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px; }
@@ -118,8 +119,13 @@ input, select, textarea {
 }
 .menu { top: 62px; right: 12px; width: 240px; padding: 8px; }
 .menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; color: var(--ink); border-radius: 8px; padding: 8px 10px; height: auto; }
-.modal { top: 72px; left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 24px)); padding: 14px; }
-.modal input { width: 100%; }
+.modal { top: 72px; left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 24px)); padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+.modal h2 { margin: 0; }
+.modal input, .modal select { width: 100%; }
+.github-callout { display: flex; justify-content: space-between; align-items: center; gap: 16px; background: #fff4df; border: 1px solid #f0d7a2; border-radius: 16px; padding: 16px 18px; }
+.github-callout h2 { margin: 0 0 4px; font-size: 18px; }
+.github-callout p { margin: 0; }
+#save-state a { color: #9cdcfe; margin-left: 8px; text-decoration: underline; }
 .hit { display: block; width: 100%; text-align: left; border: 0; background: transparent; border-radius: 8px; padding: 8px; }
 .hit:hover, .hit.on { background: var(--select); }
 .backdrop { position: fixed; inset: 0; z-index: 19; }

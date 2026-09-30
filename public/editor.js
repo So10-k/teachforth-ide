@@ -190,7 +190,7 @@ async function leaveProject() {
       await session.api(`/api/projects/${editorState.id}/close`, { method: "POST", body: {} });
     } catch (err) {
       closing = false;
-      setSaveState(err.message);
+      setSaveState(err.message, /link github/i.test(err.message) ? "/api/github/connect" : "");
       return;
     }
   }
@@ -866,9 +866,15 @@ function paintViewers(viewers) {
   el.textContent = others.map((viewer) => `${viewer.name} is here`).join(" ");
 }
 
-function setSaveState(text) {
+function setSaveState(text, href) {
   const el = document.querySelector("#save-state");
-  if (el) el.textContent = text;
+  if (!el) return;
+  el.replaceChildren(document.createTextNode(text || ""));
+  if (!href) return;
+  const link = document.createElement("a");
+  link.href = href;
+  link.textContent = "Link GitHub";
+  el.append(link);
 }
 
 let runGen = 0;

@@ -110,7 +110,7 @@ function shell(active) {
       <aside class="side">
         <p class="side-label">Portal</p>
         <a class="${active === "home" ? "on" : ""}" href="#/">Home</a>
-        ${me.role === "student" ? `<a class="${active === "github" ? "on" : ""}" href="#/github">GitHub</a>` : ""}
+        ${me.role === "student" ? `<a class="${active === "github" ? "on" : ""} ${me.githubLinked ? "" : "need"}" href="#/github">${me.githubLinked ? "GitHub" : "Connect GitHub"}</a>` : ""}
         ${me.role !== "student" ? `<a class="${active === "center" ? "on" : ""}" href="#/center">Center</a>` : ""}
         ${me.role === "teacher" ? `<a class="${active === "sandbox" ? "on" : ""}" href="#/sandbox">Sandbox</a>` : ""}
         ${me.role !== "student" ? `<a class="${active === "people" ? "on" : ""}" href="#/people">People</a>` : ""}
@@ -954,6 +954,7 @@ function openAccount() {
   menu.className = "menu";
   menu.innerHTML = `<p style="padding:8px 10px;margin:0"><strong>${esc(me.name)}</strong><br><span class="muted">${esc(me.role.replaceAll("_", " "))}</span></p>
     <a class="menu-link" href="#/person/${me.id}">My page</a>
+    ${me.role === "student" ? `<a class="menu-link" href="/api/github/connect">${me.githubLinked ? "Link GitHub again" : "Connect GitHub"}</a>` : ""}
     ${me.role === "admin" ? `<a class="menu-link" href="${POWER_URL}">Power panel</a>` : ""}
     <button id="signout">Sign out</button>`;
   document.body.append(backdrop, menu);

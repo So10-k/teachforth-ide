@@ -1335,6 +1335,7 @@ function publicUser(user) {
     role: user.role,
     githubLogin: user.github_login || "",
     githubAvatar: user.github_avatar || "",
+    githubLinked: Boolean(user.github_token),
   };
 }
 
