@@ -1,0 +1,83 @@
+name: Ship TeachForth files
+description: Overlay selected files onto the class VM or home host, then roll back that overlay if health fails.
+
+inputs:
+  command:
+    description: plan, apply, rollback, or list
+    required: true
+  repo-root:
+    description: Trusted checkout that contains deploy/ship.sh
+    required: true
+  source-root:
+    description: Tree whose files are copied
+    required: true
+  target:
+    description: class, home, or both
+    required: true
+  fileset:
+    description: listed or runtime
+    required: false
+    default: listed
+  files-file:
+    description: Optional file of repo paths, one per line
+    required: false
+    default: ""
+  rollback:
+    description: latest or a backup id
+    required: false
+    default: none
+  class-key:
+    description: Private key for the class VM. Do not log it.
+    required: false
+    default: ""
+  class-host:
+    description: SSH destination for the class VM
+    required: false
+    default: azureuser@74.248.20.108
+  home-key:
+    description: Private key for the home host. Do not log it.
+    required: false
+    default: ""
+  home-host:
+    description: SSH destination for the home host
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      working-directory: ${{ inputs.repo-root }}
+      env:
+        SHIP_CMD: ${{ inputs.command }}
+        SHIP_SRC: ${{ inputs.source-root }}
+        SHIP_TARGET: ${{ inputs.target }}
+        SHIP_FILESET: ${{ inputs.fileset }}
+        SHIP_FILES_FILE: ${{ inputs.files-file }}
+        SHIP_ROLLBACK: ${{ inputs.rollback }}
+        CLASS_SSH_HOST: ${{ inputs.class-host }}
+        HOME_SSH_HOST: ${{ inputs.home-host }}
+        CLASS_KEY_TEXT: ${{ inputs.class-key }}
+        HOME_KEY_TEXT: ${{ inputs.home-key }}
+      run: |
+        set -euo pipefail
+        umask 077
+        trap 'rm -f "$RUNNER_TEMP/class.key" "$RUNNER_TEMP/home.key"' EXIT
+        if [[ -n "$CLASS_KEY_TEXT" ]]; then
+          printf '%s\n' "$CLASS_KEY_TEXT" > "$RUNNER_TEMP/class.key"
+          export CLASS_SSH_KEY_FILE="$RUNNER_TEMP/class.key"
+        fi
+        if [[ -n "$HOME_KEY_TEXT" ]]; then
+          printf '%s\n' "$HOME_KEY_TEXT" > "$RUNNER_TEMP/home.key"
+          export HOME_SSH_KEY_FILE="$RUNNER_TEMP/home.key"
+        fi
+        bash deploy/ship.sh | tee "$RUNNER_TEMP/ship-output.txt"
+        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+          {
+            echo "### Ship ${SHIP_CMD} (${SHIP_TARGET})"
+            echo '```'
+            cat "$RUNNER_TEMP/ship-output.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+        rm -f "$RUNNER_TEMP/class.key" "$RUNNER_TEMP/home.key"

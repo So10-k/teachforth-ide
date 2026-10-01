@@ -63,6 +63,16 @@ A healthy reply is JSON with `"ok":true`. Hard-refresh the browser.
 - Do not replace `/usr/local/lib/teachforth/tf-sandbox` or `tf-exec.py` unless you changed the sandbox and know the sudoers line still matches.
 - Do not restart `teachforth-idle.timer` into a schedule, and do not delete `/var/lib/teachforth-ide/manual-hold` while a class is running.
 
+## 4. GitHub Action
+
+Actions → Deploy. It does not run on push. Leave Apply off the first time. That only prints SAME, DIFFER, NEW, or SKIP. The class VM must already be running. The action does not start it and does not deallocate it.
+
+Add the VM private key as the repo secret `CLASS_SSH_KEY`. Do not print it. Home shipping also needs `HOME_SSH_KEY`, `HOME_SSH_HOST`, and a committed `deploy/home-known_hosts` pin. Without that pin, home is refused.
+
+Apply copies only the paths you list, and only under `public/` and `server/` on the class VM, or the home shell files. It does not delete a live file that is not in that list. A blank list does nothing unless Fileset is `runtime`. A pull request lists its changed files and skips deletions. Health must return `"ok":true` or that overlay is put back. Backups stay in `/var/backups/teachforth-class` or `/var/backups/teachforth-home`. Rollback is `latest` or the stamp from List, such as `20261001-025600`.
+
+The script that copies is the one on the branch you started the action from, not the pull request. A pull request cannot change the copy step or read the key.
+
 ## If the site breaks
 
 The previous commit is still on GitHub.

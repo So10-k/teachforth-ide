@@ -1,0 +1,186 @@
+name: Deploy
+
+# Trigger this by hand. It does not run on push. The live tree can differ
+# from the repo, so the default is a plan. Apply overlays only the files you
+# name and restores those bytes if health fails.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Where to ship
+        type: choice
+        options: [class, home, both]
+        default: class
+      source:
+        description: Which tree to read
+        type: choice
+        options: [main, branch, sha, pr]
+        default: main
+      ref:
+        description: Branch, 40-character SHA, or PR number. Ignored for main.
+        type: string
+        default: ""
+      files:
+        description: Repo paths, one per line. Overrides the PR file list. Blank uses fileset.
+        type: string
+        default: ""
+      fileset:
+        description: listed refuses an empty apply. runtime overlays public and server, or the home shell, and still deletes nothing else.
+        type: choice
+        options: [listed, runtime]
+        default: listed
+      apply:
+        description: Copy files. Leave false to only show SAME, DIFFER, and NEW.
+        type: boolean
+        default: false
+      rollback:
+        description: none, list, latest, or a backup id such as 20261001-025600
+        type: string
+        default: none
+      skip_tests:
+        description: Skip selftest before apply.
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        required: true
+      source:
+        type: string
+        required: false
+        default: main
+      ref:
+        type: string
+        required: false
+        default: ""
+      files:
+        type: string
+        required: false
+        default: ""
+      fileset:
+        type: string
+        required: false
+        default: listed
+      apply:
+        type: boolean
+        required: false
+        default: false
+      rollback:
+        type: string
+        required: false
+        default: none
+      skip_tests:
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      CLASS_SSH_KEY:
+        required: false
+      HOME_SSH_KEY:
+        required: false
+      HOME_SSH_HOST:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: teachforth-deploy-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Choose ref
+        id: pick
+        env:
+          SOURCE: ${{ inputs.source }}
+          REF: ${{ inputs.ref }}
+          ROLLBACK: ${{ inputs.rollback }}
+          APPLY: ${{ inputs.apply }}
+        run: |
+          set -euo pipefail
+          if [[ "$ROLLBACK" != none ]]; then
+            echo "command=$([[ "$ROLLBACK" == list ]] && echo list || echo rollback)" >> "$GITHUB_OUTPUT"
+          elif [[ "$APPLY" == true ]]; then
+            echo "command=apply" >> "$GITHUB_OUTPUT"
+          else
+            echo "command=plan" >> "$GITHUB_OUTPUT"
+          fi
+          case "$SOURCE" in
+            main) echo "checkout=main" >> "$GITHUB_OUTPUT" ;;
+            branch)
+              [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ && "$REF" != *..* ]] || { echo "bad branch" >&2; exit 2; }
+              echo "checkout=$REF" >> "$GITHUB_OUTPUT"
+              ;;
+            sha)
+              [[ "$REF" =~ ^[0-9a-f]{40}$ ]] || { echo "SHA must be 40 hex characters" >&2; exit 2; }
+              echo "checkout=$REF" >> "$GITHUB_OUTPUT"
+              ;;
+            pr)
+              [[ "$REF" =~ ^[0-9]+$ ]] || { echo "PR must be a number" >&2; exit 2; }
+              echo "checkout=refs/pull/$REF/head" >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "bad source" >&2; exit 2 ;;
+          esac
+
+      - name: Trusted workflow
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          path: trusted
+
+      - name: Payload
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pick.outputs.checkout }}
+          path: payload
+
+      - name: Choose files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ inputs.source }}
+          REF: ${{ inputs.ref }}
+          FILES: ${{ inputs.files }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/ship-files.txt"
+          : > "$out"
+          if [[ -n "$FILES" ]]; then
+            printf '%s\n' "$FILES" >> "$out"
+          elif [[ "$SOURCE" == pr ]]; then
+            gh api --paginate "repos/$REPO/pulls/$REF/files" --jq '.[] | select(.status != "removed") | .filename' >> "$out"
+            echo "PR file list ignores deletions, so a live-only file is not removed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "files-file=$out" >> "$GITHUB_OUTPUT"
+        id: files
+
+      - name: Node 24
+        if: steps.pick.outputs.command == 'apply' && inputs.skip_tests == false
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Selftest
+        if: steps.pick.outputs.command == 'apply' && inputs.skip_tests == false
+        working-directory: payload
+        run: node server/selftest.js
+
+      - name: Ship
+        uses: ./trusted/.github/actions/ship
+        with:
+          command: ${{ steps.pick.outputs.command }}
+          repo-root: ${{ github.workspace }}/trusted
+          source-root: ${{ github.workspace }}/payload
+          target: ${{ inputs.target }}
+          fileset: ${{ inputs.fileset }}
+          files-file: ${{ steps.files.outputs.files-file }}
+          rollback: ${{ inputs.rollback }}
+          class-key: ${{ secrets.CLASS_SSH_KEY }}
+          class-host: azureuser@74.248.20.108
+          home-key: ${{ secrets.HOME_SSH_KEY }}
+          home-host: ${{ secrets.HOME_SSH_HOST }}
