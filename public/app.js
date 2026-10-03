@@ -100,8 +100,20 @@ async function render() {
   }
 }
 
+function sideLink(active, key, href, label, extra = "") {
+  return `<a class="${active === key ? "on" : ""} ${extra}" href="${href}">${label}</a>`;
+}
+
+function sideGroup(label, links) {
+  const items = links.filter(Boolean);
+  if (!items.length) return "";
+  return `<div class="side-group"><p class="side-label">${label}</p>${items.join("")}</div>`;
+}
+
 function shell(active) {
   const initial = esc((me.name || "?").slice(0, 1).toUpperCase());
+  const staff = me.role !== "student";
+  const lead = me.role === "admin" || me.role === "chapter_lead";
   return `<div class="shell">
     <header class="topbar">
       <a class="logo" href="#/"><img src="/logo.png" alt="">IDE</a>
@@ -113,15 +125,25 @@ function shell(active) {
     </header>
     <div class="shell-body">
       <aside class="side">
-        <p class="side-label">Portal</p>
-        <a class="${active === "home" ? "on" : ""}" href="#/">Home</a>
-        ${me.role === "student" ? `<a class="${active === "github" ? "on" : ""} ${me.githubLinked ? "" : "need"}" href="#/github">${me.githubLinked ? "GitHub" : "Connect GitHub"}</a>` : ""}
-        ${me.role !== "student" ? `<a class="${active === "center" ? "on" : ""}" href="#/center">Center</a>` : ""}
-        ${me.role === "teacher" ? `<a class="${active === "sandbox" ? "on" : ""}" href="#/sandbox">Sandbox</a>` : ""}
-        ${me.role !== "student" ? `<a class="${active === "people" ? "on" : ""}" href="#/people">People</a>` : ""}
-        ${me.role !== "student" ? `<a class="${active === "students" ? "on" : ""}" href="#/students">Students</a>` : ""}
-        ${me.role === "admin" || me.role === "chapter_lead" ? `<a class="${active === "chapters" ? "on" : ""}" href="#/chapters">Chapters</a><a class="${active === "roster" ? "on" : ""}" href="#/roster">Pairing</a>` : ""}
-        ${me.role === "admin" ? `<a class="${active === "accounts" ? "on" : ""}" href="#/accounts">Accounts</a>` : ""}
+        ${sideGroup("Today", [
+          sideLink(active, "home", "#/", "Home"),
+          staff ? sideLink(active, "center", "#/center", "Live class") : "",
+        ])}
+        ${me.role === "student" ? sideGroup("Your work", [
+          sideLink(active, "github", "#/github", me.githubLinked ? "GitHub" : "Connect GitHub", me.githubLinked ? "" : "need"),
+        ]) : ""}
+        ${staff ? sideGroup("People", [
+          sideLink(active, "students", "#/students", me.role === "teacher" ? "My students" : "Students"),
+          sideLink(active, "people", "#/people", "Directory"),
+          me.role === "admin" ? sideLink(active, "accounts", "#/accounts", "Accounts") : "",
+        ]) : ""}
+        ${lead ? sideGroup("Class", [
+          sideLink(active, "chapters", "#/chapters", "Chapters"),
+          sideLink(active, "roster", "#/roster", "Pairing"),
+        ]) : ""}
+        ${me.role === "teacher" ? sideGroup("Work", [
+          sideLink(active, "sandbox", "#/sandbox", "Sandbox"),
+        ]) : ""}
       </aside>
       <main class="main" id="main"></main>
     </div>
@@ -135,16 +157,19 @@ function bindShell() {
 }
 
 function loginView() {
-  app.innerHTML = `<div class="login-wrap"><form class="login-card" id="login">
-    <img src="/logo.png" alt="" style="height:28px;width:auto">
+  app.innerHTML = `<div class="login-stage"><div class="login-panel">
+    <div class="login-brand"><span class="login-badge"><img src="/logo.png" alt="TeachForth"></span><strong aria-hidden="true">IDE</strong></div>
+    <form class="login-card" id="login">
+    <p class="login-kicker">TeachForth</p>
     <h1>IDE</h1>
     <p class="muted">Sign in with your username and password. Please contact a teacher or chapter lead for assistance or account creation.</p>
     <label>Email <input id="email" autocomplete="username"></label>
     <label>Password <input id="password" type="password" autocomplete="current-password"></label>
     <p class="error" id="err"></p>
     <button class="btn" id="signin">Sign in</button>
+    <p class="login-or">or</p>
     <a class="btn-ghost" href="/api/github/login">Sign in with GitHub</a>
-  </form></div>`;
+  </form></div></div>`;
   const githubError = new URLSearchParams(location.search).get("github");
   if (githubError) document.querySelector("#err").textContent = "That GitHub account is not a TeachForth student yet. Sign in with email once, then connect GitHub.";
   document.querySelector("a[href='/api/github/login']")?.addEventListener("click", () => {

@@ -2,7 +2,7 @@ export async function renderPortal({ section, main, me, api, esc, ago, powerUrl 
   const id = Number(location.hash.split("/")[2] || 0);
   if (section === "chapters") return chaptersPage(main, me, api, esc);
   if (section === "chapter") return chapterPage(main, id, me, api, esc);
-  if (section === "students") return studentsPage(main, api, esc);
+  if (section === "students") return studentsPage(main, me, api, esc);
   if (section === "people") return peoplePage(main, me, api, esc);
   if (section === "person" || section === "student" || section === "folder") return personPage(main, id, me, api, esc, ago);
   if (section === "accounts" || section === "studio") return accountsPage(main, api, esc, powerUrl);
@@ -15,6 +15,31 @@ export async function renderPortal({ section, main, me, api, esc, ago, powerUrl 
 
 function page(title, sub, body) {
   return `<div class="portal"><header class="page-head"><div><h1>${title}</h1><p class="muted">${sub}</p></div></header>${body}</div>`;
+}
+
+function jumps(items) {
+  return `<nav class="shortcut-row" aria-label="Go to">${items.filter(Boolean).map(([href, title, hint]) => `<a class="jump" href="${href}"><strong>${title}</strong><span>${hint}</span></a>`).join("")}</nav>`;
+}
+
+function homeJumps(me, powerUrl) {
+  const items = [];
+  if (me.role !== "student") items.push(["#/center", "Live class", "Who is paired right now"]);
+  if (me.role === "teacher") {
+    items.push(["#/students", "My students", "Open someone in your live block"]);
+    items.push(["#/people", "Directory", "People you can open"]);
+    items.push(["#/sandbox", "Sandbox", "Your code, not a student repo"]);
+  }
+  if (me.role === "admin" || me.role === "chapter_lead") {
+    items.push(["#/students", "Students", "Search and open a profile"]);
+    items.push(["#/people", "Directory", "Change a role or password"]);
+    items.push(["#/chapters", "Chapters", "Sites, leads, and blocks"]);
+    items.push(["#/roster", "Pairing", "Match a teacher to a student"]);
+  }
+  if (me.role === "admin") {
+    items.push(["#/accounts", "Accounts", "Create a login"]);
+    items.push([powerUrl, "Power panel", "Start or stop the server"]);
+  }
+  return `<section class="goto"><h2 class="unit">Go to</h2>${jumps(items)}</section>`;
 }
 
 async function homePage(main, me, api, esc, powerUrl) {
@@ -36,7 +61,7 @@ async function homePage(main, me, api, esc, powerUrl) {
          <aside class="panel"><h2>GitHub</h2><p>${linked ? `Connected as <strong>@${esc(me.githubLogin)}</strong>. This link is required.` : "Not connected. Students cannot save work until GitHub is linked."}</p>
            <div class="stack">
              <a class="btn" href="/api/github/connect">${connectLabel}</a>
-             <a class="btn-ghost" href="#/github">Repositories</a>
+             <a class="jump" href="#/github"><strong>Repositories</strong><span>Sync and open saved work</span></a>
            </div>
          </aside>
        </div>`,
@@ -57,18 +82,8 @@ async function homePage(main, me, api, esc, powerUrl) {
         <article class="stat"><span>Sessions</span><strong>${stats.liveBlocks}</strong></article>
         ${me.role === "admin" ? `<article class="stat"><span>Teachers</span><strong>${stats.teachers}</strong></article>` : ""}
       </div>
-      <div class="split">
-        <section><h2 class="unit">Live now</h2>${liveCards(home.live, esc) || `<p class="muted">Nothing is live. Book a block, promote a teacher to lead it, then start the session.</p>`}</section>
-        <aside class="panel">
-          <h2>Go to</h2>
-          <div class="stack">
-            ${me.role !== "student" ? `<a class="btn" href="#/people">People</a>` : ""}
-            ${me.role === "admin" || me.role === "chapter_lead" ? `<a class="btn" href="#/chapters">Chapters</a><a class="btn" href="#/students">Students</a><a class="btn" href="#/roster">Pairing</a>` : ""}
-            ${me.role === "teacher" ? `<a class="btn" href="#/students">My students</a><a class="btn" href="#/sandbox">Sandbox</a>` : ""}
-            ${me.role === "admin" ? `<a class="btn" href="#/accounts">Accounts</a><a class="btn" href="${esc(powerUrl)}">Power panel</a>` : ""}
-          </div>
-        </aside>
-      </div>
+      ${homeJumps(me, esc(powerUrl))}
+      <section><h2 class="unit">Live now</h2>${liveCards(home.live, esc) || `<p class="muted">Nothing is live. Book a block, promote a teacher to lead it, then start the session.</p>`}</section>
       ${home.chapters.length ? `<h2 class="unit">Chapters</h2><div class="cards">${home.chapters.map((chapter) => chapterCard(chapter, esc)).join("")}</div>` : ""}`,
   );
   bindChapters(main);
@@ -80,7 +95,7 @@ async function chaptersPage(main, me, api, esc) {
   main.innerHTML = page(
     "Chapters",
     "A chapter is a partner site. Open one for its students, blocks, and leads.",
-    `${me.role === "admin" ? `<section class="panel"><h2>New chapter</h2><div class="row"><input id="chapter-name" placeholder="Chapter name"><input id="chapter-place" placeholder="City or country"><button class="btn" id="add-chapter">Create</button></div><p class="error" id="err"></p></section>` : ""}
+    `${me.role === "admin" ? `<section class="panel form-card"><h2>New chapter</h2><div class="form-row"><label>Name<input id="chapter-name" placeholder="Chapter name"></label><label>Place<input id="chapter-place" placeholder="City or country"></label><button class="btn" id="add-chapter">Create</button></div><p class="error" id="err"></p></section>` : ""}
      <input class="search" id="q" placeholder="Search chapters">
      <div class="cards" id="list">${chapters.map((chapter) => chapterCard(chapter, esc, me.role === "admin")).join("") || `<p class="muted">No chapters yet.</p>`}</div>`,
   );
@@ -118,19 +133,18 @@ async function chapterPage(main, id, me, api, esc) {
   main.innerHTML = page(
     esc(chapter.name),
     esc(chapter.place || "No city yet"),
-    `${me.role === "admin" ? `<div class="row"><button class="btn-ghost danger" id="delete-chapter">Delete chapter</button><p class="muted">People stay. Blocks, pairs, and chapter membership go with it. Session reports stay on the student.</p></div>` : ""}
-     <div class="chips">${leads.map((lead) => `<span class="chip">Lead · ${esc(lead.name)}${me.role === "admin" ? `<button class="chip-x" data-drop-lead="${lead.id}" title="Remove lead">×</button>` : ""}</span>`).join("") || `<span class="chip">No chapter lead</span>`}</div>
+    `<div class="chips">${leads.map((lead) => `<span class="chip">Lead · ${esc(lead.name)}${me.role === "admin" ? `<button class="chip-x" data-drop-lead="${lead.id}" title="Remove lead">×</button>` : ""}</span>`).join("") || `<span class="chip">No chapter lead</span>`}</div>
      <div class="split">
-       <section class="panel"><h2>Leadership</h2>
-         ${typeField("lead-q", "Type a chapter lead")}
+       <section class="panel form-card"><h2>Leadership</h2>
+         <label>Chapter lead${typeField("lead-q", "Type a chapter lead")}</label>
          <button class="btn" id="add-lead">Assign lead</button>
          <h2>Add a person</h2>
-         ${typeField("member-q", "Type a student or teacher")}
+         <label>Student or teacher${typeField("member-q", "Type a student or teacher")}</label>
          <button class="btn" id="add-member">Add to chapter</button>
        </section>
-       <section class="panel"><h2>Book a block</h2>
-         <input id="block-name" placeholder="Saturday block">
-         ${typeField("session-q", "Type the teacher who will lead this session")}
+       <section class="panel form-card"><h2>Book a block</h2>
+         <label>Block<input id="block-name" placeholder="Saturday block"></label>
+         <label>Session lead${typeField("session-q", "Type the teacher who will lead this session")}</label>
          <button class="btn" id="add-block">Book block</button>
          <p class="error" id="err"></p>
          <p class="muted">A session lead is a normal teacher, promoted for this block only.</p>
@@ -141,7 +155,8 @@ async function chapterPage(main, id, me, api, esc) {
      <h2 class="unit">Teachers</h2>
      <div class="cards">${chapterTeachers.map((teacher) => `<div class="member-card">${personCard(teacher, esc)}<button class="btn-ghost danger" data-drop-member="${teacher.id}">Remove</button></div>`).join("") || `<p class="muted">No teachers in this chapter yet.</p>`}</div>
      <h2 class="unit">Blocks</h2>
-     ${blocks.map((block) => blockCard(block, esc)).join("") || `<p class="muted">No blocks yet.</p>`}`,
+     ${blocks.map((block) => blockCard(block, esc)).join("") || `<p class="muted">No blocks yet.</p>`}
+     ${me.role === "admin" ? `<section class="panel"><h2>Remove this chapter</h2><p class="muted">People stay. Blocks, pairs, and chapter membership go with it. Session reports stay on the student.</p><button class="btn-ghost danger" id="delete-chapter">Delete chapter</button></section>` : ""}`,
   );
   const leadPick = bindTypeahead(main.querySelector("#lead-q"), leadsPool, esc);
   const memberPick = bindTypeahead(main.querySelector("#member-q"), people.filter((person) => person.role !== "admin"), esc);
@@ -189,8 +204,8 @@ async function chapterPage(main, id, me, api, esc) {
   }
 }
 
-async function studentsPage(main, api, esc) {
-  main.innerHTML = page("Students", "Search by name, email, chapter, or GitHub.", `<input class="search" id="q" placeholder="Search students" autofocus><div class="cards" id="list"></div>`);
+async function studentsPage(main, me, api, esc) {
+  main.innerHTML = page(me.role === "teacher" ? "My students" : "Students", "Search by name, email, chapter, or GitHub.", `<input class="search" id="q" placeholder="Search students" autofocus><div class="cards" id="list"></div>`);
   const paint = async () => {
     const q = document.querySelector("#q").value.trim();
     const { students } = await api(`/api/directory?q=${encodeURIComponent(q)}`);
@@ -234,26 +249,37 @@ async function accountsPage(main, api, esc, powerUrl) {
   main.innerHTML = page(
     "Accounts",
     "Create people here. Chapters, pairing, and sessions live on their own pages.",
-    `<section class="panel"><h2>New account</h2><div class="row">
-        <input id="name" placeholder="Name"><input id="email" placeholder="Email">
-        <select id="role"><option value="student">Student</option><option value="teacher">Teacher</option><option value="chapter_lead">Chapter lead</option><option value="admin">Admin</option></select>
-        <input id="password" placeholder="Password, 8+ characters"><button class="btn" id="create-user">Create</button>
-      </div><p class="error" id="err"></p></section>
-      <input class="search" id="q" placeholder="Search accounts">
-      <table><tbody id="user-rows">${userRows(users, esc)}</tbody></table>
-      <section class="panel"><h2>GitHub for students</h2>
-        <p>Students link their own GitHub. TeachForth commits only when the student closes a project, using their account. Teachers cannot push.</p>
-        <ol class="setup">
-          <li>On GitHub, open Settings, Developer settings, OAuth Apps, New OAuth App.</li>
-          <li>Homepage URL: <code>${esc(location.origin)}</code></li>
-          <li>Authorization callback URL: <code>${esc(setup.callback)}</code></li>
-          <li>Paste the client ID and secret here. The secret is stored on this server and is not shown again.</li>
-        </ol>
-        <div class="row"><input id="gh-id" placeholder="Client ID" value="${esc(setup.clientId)}"><input id="gh-secret" placeholder="${setup.configured ? "Secret saved. Paste a new one to replace it." : "Client secret"}" type="password"><button class="btn" id="save-gh">Save GitHub app</button></div>
-        <p class="muted">${setup.configured ? "GitHub app is ready." : "GitHub is not ready yet."}</p>
-        <p class="error" id="gh-err"></p>
+    `<div class="admin-layout">
+      <section>
+        <div class="row spread"><h2 class="unit">Logins</h2><a class="btn-ghost" href="${esc(powerUrl)}">Power panel</a></div>
+        <input class="search" id="q" placeholder="Search accounts">
+        <div class="panel table-card"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th></tr></thead><tbody id="user-rows">${userRows(users, esc)}</tbody></table></div>
       </section>
-      <p><a class="btn" href="${esc(powerUrl)}">Power panel</a></p>`,
+      <div class="stack">
+        <section class="panel form-card"><h2>New account</h2>
+          <label>Name<input id="name" placeholder="Name"></label>
+          <label>Email<input id="email" placeholder="Email"></label>
+          <label>Role<select id="role"><option value="student">Student</option><option value="teacher">Teacher</option><option value="chapter_lead">Chapter lead</option><option value="admin">Admin</option></select></label>
+          <label>Password<input id="password" placeholder="Password, 8+ characters"></label>
+          <button class="btn" id="create-user">Create</button>
+          <p class="error" id="err"></p>
+        </section>
+        <section class="panel form-card"><h2>GitHub for students</h2>
+          <p>Students link their own GitHub. TeachForth commits only when the student closes a project, using their account. Teachers cannot push.</p>
+          <ol class="setup">
+            <li>On GitHub, open Settings, Developer settings, OAuth Apps, New OAuth App.</li>
+            <li>Homepage URL: <code>${esc(location.origin)}</code></li>
+            <li>Authorization callback URL: <code>${esc(setup.callback)}</code></li>
+            <li>Paste the client ID and secret here. The secret is stored on this server and is not shown again.</li>
+          </ol>
+          <label>Client ID<input id="gh-id" placeholder="Client ID" value="${esc(setup.clientId)}"></label>
+          <label>Client secret<input id="gh-secret" placeholder="${setup.configured ? "Secret saved. Paste a new one to replace it." : "Client secret"}" type="password"></label>
+          <button class="btn" id="save-gh">Save GitHub app</button>
+          <p class="muted">${setup.configured ? "GitHub app is ready." : "GitHub is not ready yet."}</p>
+          <p class="error" id="gh-err"></p>
+        </section>
+      </div>
+    </div>`,
   );
   const all = users;
   document.querySelector("#q").oninput = () => {
@@ -305,7 +331,7 @@ async function pairingPage(main, api, esc) {
           <label>Teacher ${typeField(`t-${block.id}`, "Type a teacher")}</label>
           <label>Student ${typeField(`s-${block.id}`, "Type a student")}</label>
         </div>
-        <div class="row">
+        <div class="actions">
           <button class="btn" data-pair="${block.id}">Pair</button>
           <button class="btn-ghost" data-promote="${block.id}">Promote typed teacher to session lead</button>
           ${block.status !== "live" ? `<button class="btn-ghost" data-live="${block.id}">Start session</button>` : `<button class="btn-ghost" data-end="${block.id}">End session</button>`}
@@ -516,7 +542,7 @@ function openNewProject(me, api, esc) {
 async function centerPage(main, api, esc) {
   const data = await api("/api/center");
   const live = data.blocks.filter((block) => block.status === "live");
-  main.innerHTML = page("Control center", "Students with a teacher in a live block.", liveCards(live, esc) || `<p class="muted">No live block. A chapter lead starts one from Pairing.</p>`);
+  main.innerHTML = page("Live class", "Students with a teacher in a live block.", liveCards(live, esc) || `<p class="muted">No live block. A chapter lead starts one from Pairing.</p>`);
   bindProfiles(main);
 }
 
@@ -526,7 +552,7 @@ function liveCards(blocks, esc) {
 
 function chapterCard(chapter, esc, canDelete) {
   if (!canDelete) return `<button class="card link" data-chapter="${chapter.id}"><h3>${esc(chapter.name)}</h3><p class="muted">${esc(chapter.place || "Chapter")}</p></button>`;
-  return `<article class="card member-card"><button class="card link" data-chapter="${chapter.id}"><h3>${esc(chapter.name)}</h3><p class="muted">${esc(chapter.place || "Chapter")}</p></button><button class="btn-ghost danger" data-delete-chapter="${chapter.id}">Delete</button></article>`;
+  return `<article class="card chapter-card"><button class="card-open" data-chapter="${chapter.id}"><h3>${esc(chapter.name)}</h3><p class="muted">${esc(chapter.place || "Chapter")}</p></button><button class="btn-ghost danger" data-delete-chapter="${chapter.id}">Delete</button></article>`;
 }
 
 function personCard(student, esc) {
@@ -626,8 +652,8 @@ function roleName(role) {
 async function peoplePage(main, me, api, esc) {
   const { people } = await api("/api/people?scope=manage");
   main.innerHTML = page(
-    "People",
-    me.role === "admin" ? "Every account. Open one to change role, password, sandbox, or access." : "People you can open.",
+    "Directory",
+    me.role === "admin" ? `Every account. Open one to change role, password, sandbox, or access. New logins are created in <a href="#/accounts">Accounts</a>.` : "People you can open.",
     `<input class="search" id="q" placeholder="Search by name, email, or role" autofocus><div class="cards" id="list"></div>`,
   );
   const paint = () => {
