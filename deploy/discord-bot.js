@@ -46,6 +46,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/setup") return setup(req, res);
     if (req.method === "POST" && url.pathname === "/event") return event(req, res);
     if (req.method === "POST" && url.pathname === "/interactions") return interaction(req, res);
+    if (req.method === "POST" && url.pathname === "/internal/command") return slashCommand(req, res);
     json(res, 404, { error: "Not found" });
   } catch (err) {
     json(res, err.status || 500, { error: "Something went wrong" });
@@ -88,23 +89,44 @@ async function interaction(req, res) {
 }
 
 function commandPayload(body) {
-  const config = loadConfig();
   if (body.type === 1) return { reply: { type: 1 } };
+  // Buttons and menus belong to the Modmail process. Never replace them.
+  if (body.type === 3 || body.type === 5) return { reply: { type: 6 } };
   if (body.type !== 2) return now(say("I don't know that one", "Try /class or /help."));
-  if (!body.guild_id && !DM_COMMANDS.has(body.data?.name || "")) {
-    return now(say("Use that in the server", "Open the TeachForth Discord for staff tools."));
-  }
-  if (config.guildId && body.guild_id && body.guild_id !== config.guildId) {
-    return now(say("Wrong server", "Use me in the TeachForth Discord."));
-  }
-  const name = body.data?.name || "";
-  const id = actorId(body);
-  if (!id || !pace(`cmd:${id}`, 8, 60_000)) return now(say("Slow down", "Give it a minute, then try again."));
-  if (name === "help") return now(helpMessage(cachedRole(id)));
   return {
     reply: { type: 5, data: { flags: 64 } },
-    after: () => run(name, body, id).catch(() => say("That got stuck", "Try again in a minute.")),
+    after: () => answerCommand(body).catch(() => say("That got stuck", "Try again in a minute.")),
   };
+}
+
+async function slashCommand(req, res) {
+  if (!helpdeskSecret(String(req.headers["x-teachforth-secret"] || ""))) return json(res, 401, { error: "no" });
+  let body;
+  try {
+    body = JSON.parse(await readRaw(req));
+  } catch {
+    return json(res, 400, { error: "bad" });
+  }
+  const message = await answerCommand(body).catch(() => say("That got stuck", "Try again in a minute."));
+  json(res, 200, messageData(message));
+}
+
+function helpdeskSecret(given) {
+  const secret = readFile(process.env.HELPDESK_SECRET_FILE || "/var/lib/teachforth-helper/internal-secret");
+  const a = Buffer.from(secret);
+  const b = Buffer.from(given);
+  return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+}
+
+async function answerCommand(body) {
+  const config = loadConfig();
+  const name = body.data?.name || "";
+  const id = actorId(body);
+  if (!id || !pace(`cmd:${id}`, 8, 60_000)) return say("Slow down", "Give it a minute, then try again.");
+  if (!body.guild_id && !DM_COMMANDS.has(name)) return say("Use that in the server", "Open the TeachForth Discord for staff tools.");
+  if (config.guildId && body.guild_id && body.guild_id !== config.guildId) return say("Wrong server", "Use me in the TeachForth Discord.");
+  if (name === "help") return helpMessage(cachedRole(id));
+  return run(name, body, id);
 }
 
 async function run(name, body, id) {
@@ -614,12 +636,32 @@ async function followup(token, message) {
 async function register() {
   const config = loadConfig();
   if (!config.token || !config.applicationId) return;
+  await clearInteractionsEndpoint();
   if (config.guildId) {
     await putCommands(`/applications/${config.applicationId}/guilds/${config.guildId}/commands`, COMMANDS);
-    await putCommands(`/applications/${config.applicationId}/commands`, COMMANDS.filter((item) => DM_COMMANDS.has(item.name)));
+    await putCommands(`/applications/${config.applicationId}/commands`, []);
     return;
   }
   await putCommands(`/applications/${config.applicationId}/commands`, COMMANDS);
+}
+
+async function clearInteractionsEndpoint() {
+  const config = loadConfig();
+  const res = await fetch(`https://discord.com/api/v10/applications/${config.applicationId}`, {
+    method: "PATCH",
+    headers: { authorization: `Bot ${config.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ interactions_endpoint_url: null }),
+    signal: AbortSignal.timeout(8000),
+  });
+  console.log("interactions endpoint", res.status);
+  if (res.ok) return;
+  const retry = await fetch(`https://discord.com/api/v10/applications/${config.applicationId}`, {
+    method: "PATCH",
+    headers: { authorization: `Bot ${config.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ interactions_endpoint_url: "" }),
+    signal: AbortSignal.timeout(8000),
+  });
+  console.log("interactions endpoint retry", retry.status);
 }
 
 async function putCommands(path, commands) {

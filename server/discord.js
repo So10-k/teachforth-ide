@@ -17,6 +17,7 @@ export function discordRoute(ctx, path) {
   if (path === "/api/discord/profile" && req.method === "GET") return profile(ctx);
   if (path === "/api/discord/live" && req.method === "GET") return live(ctx);
   if (path === "/api/discord/lookup" && req.method === "GET") return lookup(ctx);
+  if (path === "/api/discord/dossier" && req.method === "GET") return dossier(ctx);
   if (path === "/api/discord/projects" && req.method === "GET") return projects(ctx);
   if (path === "/api/discord/share" && req.method === "GET") return share(ctx);
   if (path === "/api/discord/chapters" && req.method === "GET") return chapters(ctx);
@@ -272,6 +273,128 @@ function lookup(ctx) {
     githubLogin: row.github_token ? row.github_login || "" : "",
   }));
   ctx.send(ctx.res, 200, { people });
+}
+
+function dossier(ctx) {
+  const actor = linkedUser(ctx);
+  if (!isStaff(actor)) ctx.fail(403, "You cannot do that");
+  const targetId = snowflake(ctx.url?.searchParams.get("target"));
+  let person = null;
+  if (targetId) {
+    person = ctx.db.prepare("SELECT * FROM users WHERE discord_id = ?").get(targetId);
+    if (!person) {
+      ctx.send(ctx.res, 200, { linked: false, discordId: targetId });
+      return;
+    }
+  } else {
+    const q = safeLike(ctx.url?.searchParams.get("q") || "");
+    if (q.length < 2) ctx.fail(400, "Type at least 2 letters");
+    const rows = ctx.db.prepare(
+      `SELECT * FROM users
+       WHERE lower(name) LIKE ? OR lower(email) LIKE ? OR discord_id = ?
+       ORDER BY name LIMIT 20`,
+    ).all(`%${q}%`, `%${q}%`, q).filter((row) => canOpenPerson(ctx.db, actor, row));
+    if (rows.length !== 1) {
+      ctx.send(ctx.res, 200, {
+        choices: rows.slice(0, 8).map((row) => ({ id: row.id, name: row.name, role: row.role, discordId: snowflake(row.discord_id) })),
+      });
+      return;
+    }
+    person = rows[0];
+  }
+  if (!canOpenPerson(ctx.db, actor, person)) ctx.fail(403, "You cannot open that account");
+  ctx.send(ctx.res, 200, accountDossier(ctx.db, person));
+}
+
+function accountDossier(db, person) {
+  const projects = db.prepare(
+    `SELECT id, title, language, updated_at, github_url, open
+     FROM projects WHERE owner_id = ? ORDER BY updated_at DESC LIMIT 6`,
+  ).all(person.id);
+  const reports = db.prepare(
+    `SELECT r.body, r.created_at, u.name AS author
+     FROM reports r JOIN users u ON u.id = r.author_id
+     WHERE r.student_id = ? ORDER BY r.id DESC LIMIT 5`,
+  ).all(person.id);
+  const skills = db.prepare(
+    `SELECT module_id, course, level, project_title, created_at
+     FROM skill_marks WHERE student_id = ? ORDER BY id DESC LIMIT 6`,
+  ).all(person.id);
+  const history = db.prepare(
+    `SELECT a.action, a.detail, a.created_at, u.name AS actor
+     FROM audit a
+     LEFT JOIN users u ON u.id = a.actor_id
+     LEFT JOIN projects p ON p.id = a.project_id
+     WHERE a.actor_id = ? OR p.owner_id = ?
+     ORDER BY a.id DESC LIMIT 8`,
+  ).all(person.id, person.id);
+  const chapters = db.prepare(
+    `SELECT c.name, c.place FROM chapter_members m
+     JOIN chapters c ON c.id = m.chapter_id
+     WHERE m.user_id = ? ORDER BY c.name LIMIT 6`,
+  ).all(person.id);
+  const courses = db.prepare("SELECT course FROM enrollments WHERE user_id = ? ORDER BY course").all(person.id);
+  const pairs = db.prepare(
+    `SELECT b.name AS block, b.status, t.name AS teacher, s.name AS student
+     FROM pairs p
+     JOIN blocks b ON b.id = p.block_id
+     JOIN users t ON t.id = p.teacher_id
+     JOIN users s ON s.id = p.student_id
+     WHERE p.student_id = ? OR p.teacher_id = ?
+     ORDER BY p.created_at DESC LIMIT 6`,
+  ).all(person.id, person.id);
+  return {
+    linked: true,
+    person: {
+      id: person.id,
+      name: person.name,
+      email: person.email || "",
+      role: person.role,
+      createdAt: person.created_at || "",
+      discordId: snowflake(person.discord_id),
+      discordName: person.discord_name || "",
+      githubLinked: Boolean(person.github_token),
+      githubLogin: person.github_token ? person.github_login || "" : "",
+    },
+    projects: projects.map((row) => ({
+      id: row.id,
+      title: row.title,
+      language: row.language,
+      updatedAt: row.updated_at,
+      githubUrl: row.github_url || "",
+      open: Boolean(row.open),
+    })),
+    reports: reports.map((row) => ({
+      author: row.author,
+      body: publicText(row.body, 180),
+      createdAt: row.created_at,
+    })),
+    skills: skills.map((row) => ({
+      module: row.module_id,
+      course: row.course,
+      level: row.level,
+      project: row.project_title || "",
+      createdAt: row.created_at,
+    })),
+    history: history.map((row) => ({
+      action: row.action,
+      actor: row.actor || "",
+      detail: publicText(row.detail, 120),
+      createdAt: row.created_at,
+    })),
+    chapters: chapters.map((row) => ({ name: row.name, place: row.place || "" })),
+    courses: courses.map((row) => row.course),
+    pairs: pairs.map((row) => ({
+      block: row.block,
+      status: row.status,
+      teacher: row.teacher,
+      student: row.student,
+    })),
+  };
+}
+
+function publicText(value, max) {
+  return plain(String(value || "").replace(/(?:ghp_|github_pat_|sk-|xox[baprs]-)[A-Za-z0-9_-]+/g, "[removed]"), max);
 }
 
 function projects(ctx) {
