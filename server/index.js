@@ -16,6 +16,7 @@ import { ensureControls, fileViews, controlView, publicControl, studentWriteBloc
 import { planSteps, startSandbox, readSandbox, writeSandboxStdin, stopSandbox } from "./sandbox.js";
 import { mintPreview, previewProject, previewBody } from "./preview-site.js";
 import { addDomain, listDomains, reapplyDomains, removeDomain } from "./domains.js";
+import { discordRoute, notifyDiscord } from "./discord.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC = join(ROOT, "public");
@@ -462,6 +463,7 @@ async function route(req, res, url) {
   if (path === "/api/assignments" && req.method === "DELETE") return unassign(req, res, user);
 
   if (path === "/api/students" && req.method === "GET") return send(res, 200, { students: sessionStudents(db, user) });
+  if (await discordRoute({ db, req, res, url, user, send, fail, readJson, audit, requireUser }, path) !== false) return;
   if (await githubRoute({
     db, req, res, user, send, fail, readJson, audit, requireUser, projectView,
     startSession: (target, userId) => startSession(target, req, userId),
@@ -567,6 +569,7 @@ function login(req, res) {
     loginAttempts.delete(key);
     startSession(res, req, user.id);
     audit(user, "login", null, "");
+    notifyDiscord({ type: "login", name: user.name, role: user.role });
     send(res, 200, { user: publicUser(user) });
   });
 }
@@ -633,6 +636,7 @@ async function updateUser(req, res, actor, id) {
     throw err;
   }
   audit(actor, "update_user", null, `${id} ${role}`);
+  if (target.discord_id && role !== target.role) notifyDiscord({ type: "role", discordId: target.discord_id, role });
   send(res, 200, { user: { id, name, email, role } });
 }
 
@@ -671,6 +675,7 @@ function deleteUser(res, actor, id) {
     throw err;
   }
   audit(actor, "delete_user", null, `${target.email} local projects removed; GitHub repos stay`);
+  if (target.discord_id) notifyDiscord({ type: "unlink", discordId: target.discord_id });
   send(res, 200, { ok: true, githubKept: Boolean(target.github_login) });
 }
 
@@ -1386,6 +1391,7 @@ function publicUser(user) {
     githubLogin: user.github_login || "",
     githubAvatar: user.github_avatar || "",
     githubLinked: Boolean(user.github_token),
+    discordLinked: Boolean(user.discord_id),
   };
 }
 

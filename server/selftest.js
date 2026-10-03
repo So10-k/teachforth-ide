@@ -7,11 +7,14 @@ import { publicSlug, siteFiles } from "./publish.js";
 import { mergeText } from "../public/merge.js";
 import { request as httpRequest } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { normalizeDomain } from "./domains.js";
+import { commandAllowed, helpText, shareCard, verifyDiscord } from "../deploy/discord-policy.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const dir = mkdtempSync(join(tmpdir(), "teachforth-"));
+writeFileSync(join(dir, "discord-secret"), "selftest-discord-secret\n", { mode: 0o600 });
 const publishDir = join(dir, "published");
 const port = 8799;
 const child = spawn(process.execPath, ["server/index.js"], {
@@ -27,6 +30,8 @@ const child = spawn(process.execPath, ["server/index.js"], {
     SEED_DEMO: "1",
     IDLE_STAMP: "",
     TF_DOMAINS_BIN: "/tmp/teachforth-domains-missing",
+    DISCORD_SECRET_FILE: join(dir, "discord-secret"),
+    DISCORD_EVENT_URL: "",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -537,6 +542,51 @@ try {
   assert(readFileSync(join(dir, "domains.txt"), "utf8") === "ide.school.edu\n", "the helper list is the saved name");
   const cleared = await send("/api/domains", { method: "DELETE", cookie: admin.cookie, body: { domain: "ide.school.edu" } });
   assert(cleared.domains.length === 0 && readFileSync(join(dir, "domains.txt"), "utf8") === "", "removing a domain clears the helper list");
+
+  assert(commandAllowed("power", "admin") && !commandAllowed("power", "teacher") && !commandAllowed("live", "student") && commandAllowed("share", "student"), "discord command roles");
+  assert(!helpText("student").includes("/power") && helpText("admin").includes("/logins"), "discord help follows the role");
+  assert(!shareCard({ title: "Cards", language: "web", owner: "Sam", url: "https://74.248.20.108/#/project/1" }).includes("password"), "share card has no secrets");
+  const keys = generateKeyPairSync("ed25519");
+  const publicHex = keys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+  const signedBody = JSON.stringify({ type: 1 });
+  const signedAt = String(Math.floor(Date.now() / 1000));
+  const signature = sign(null, Buffer.from(signedAt + signedBody), keys.privateKey).toString("hex");
+  assert(verifyDiscord(publicHex, signedAt, signedBody, signature), "discord signatures verify");
+  assert(!verifyDiscord(publicHex, signedAt, signedBody, "00".repeat(64)) && !verifyDiscord(publicHex, "1", signedBody, signature), "discord signatures reject forgeries and old timestamps");
+  const discordCode = await send("/api/discord/code", { method: "POST", cookie: admin.cookie, body: {} });
+  assert(/^[A-Z2-9]{8}$/.test(discordCode.code), "discord link code");
+  const secretHeader = { "content-type": "application/json", "x-teachforth-discord": "selftest-discord-secret" };
+  const noSecret = await fetch(`${base}/api/discord/claim`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: discordCode.code, discordId: "123456789012345678", discordName: "Admin" }),
+  });
+  assert(noSecret.status === 401, "discord claim needs the helper secret");
+  const claimed = await fetch(`${base}/api/discord/claim`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ code: discordCode.code, discordId: "123456789012345678", discordName: "Admin" }),
+  });
+  const claimedBody = await claimed.json();
+  assert(claimed.status === 200 && claimedBody.role === "admin", "discord code links the signed-in account");
+  const studentCode = await send("/api/discord/code", { method: "POST", cookie: student.cookie, body: {} });
+  const studentClaim = await fetch(`${base}/api/discord/claim`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ code: studentCode.code, discordId: "223456789012345678", discordName: "Student" }),
+  });
+  assert(studentClaim.status === 200, "student can link discord");
+  const studentLive = await fetch(`${base}/api/discord/live?discordId=223456789012345678`, { headers: secretHeader });
+  assert(studentLive.status === 403, "students cannot read live pairs from discord");
+  const shared = await fetch(`${base}/api/discord/share?discordId=123456789012345678&name=hello`, { headers: secretHeader });
+  const sharedBody = await shared.json();
+  assert(shared.status === 200 && !JSON.stringify(sharedBody).includes("github_token") && !JSON.stringify(sharedBody).includes("password"), "discord share has no code or tokens");
+  const badCode = await fetch(`${base}/api/discord/claim`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ code: "ABCD;rm", discordId: "323456789012345678", discordName: "Nope" }),
+  });
+  assert(badCode.status === 400, "discord rejects a bad code");
 
   console.log("selftest ok");
   console.log("outsider blocked", outsider.user.email);

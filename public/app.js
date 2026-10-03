@@ -990,9 +990,29 @@ function openAccount() {
     <a class="menu-link" href="#/person/${me.id}">My page</a>
     ${me.role === "student" ? `<a class="menu-link" href="/api/github/connect">${me.githubLinked ? "Link GitHub again" : "Connect GitHub"}</a>` : ""}
     ${me.role === "admin" ? `<a class="menu-link" href="${POWER_URL}">Power panel</a>` : ""}
+    <button id="discord-link" type="button">${me.discordLinked ? "Unlink Discord" : "Link Discord"}</button>
     <button id="signout">Sign out</button>`;
   document.body.append(backdrop, menu);
   backdrop.onclick = closePop;
+  menu.querySelector("#discord-link").onclick = async () => {
+    const err = menu.querySelector("#discord-err") || menu.appendChild(document.createElement("p"));
+    err.id = "discord-err";
+    err.className = "error";
+    try {
+      if (me.discordLinked) {
+        await api("/api/discord/me", { method: "DELETE" });
+        me.discordLinked = false;
+        menu.querySelector("#discord-link").textContent = "Link Discord";
+        err.textContent = "Discord is unlinked.";
+        return;
+      }
+      const data = await api("/api/discord/code", { method: "POST", body: {} });
+      err.className = "muted";
+      err.textContent = `In the TeachForth Discord, run /link and paste ${data.code}. It expires in 10 minutes.`;
+    } catch (error) {
+      err.textContent = error.message;
+    }
+  };
   menu.querySelector("#signout").onclick = async () => {
     await api("/api/logout", { method: "POST", body: {} });
     me = null;

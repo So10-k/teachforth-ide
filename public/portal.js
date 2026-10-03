@@ -280,6 +280,9 @@ async function accountsPage(main, api, esc, powerUrl) {
           <p class="muted">${setup.configured ? "GitHub app is ready." : "GitHub is not ready yet."}</p>
           <p class="error" id="gh-err"></p>
         </section>
+        <section class="panel form-card"><h2>Discord</h2>
+          <p>Link Discord from the account menu. The helper can start the class server, post sign-ins, and share a project link. It never posts code or passwords.</p>
+        </section>
         <section class="panel form-card"><h2>Authorized domains</h2>
           <p>Extra names that should open this IDE are on the Domains page.</p>
           <a class="btn-ghost" href="#/domains">Open domains</a>

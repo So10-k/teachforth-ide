@@ -161,6 +161,11 @@ export function openDatabase(file) {
       cert TEXT NOT NULL DEFAULT 'none',
       detail TEXT NOT NULL DEFAULT ''
     );
+    CREATE TABLE IF NOT EXISTS discord_codes (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      code_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS github_states (
       state TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -172,9 +177,12 @@ export function openDatabase(file) {
   addColumn(db, "users", "github_token", "github_token TEXT");
   addColumn(db, "users", "github_avatar", "github_avatar TEXT");
   addColumn(db, "users", "github_code", "github_code TEXT");
+  addColumn(db, "users", "discord_id", "discord_id TEXT");
+  addColumn(db, "users", "discord_name", "discord_name TEXT");
   addColumn(db, "github_states", "purpose", "purpose TEXT NOT NULL DEFAULT 'connect'");
   addColumn(db, "projects", "github_sha", "github_sha TEXT");
   addColumn(db, "projects", "open", "open INTEGER NOT NULL DEFAULT 1");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_discord_id ON users(discord_id) WHERE discord_id IS NOT NULL AND discord_id != ''");
   db.exec(`
     CREATE TABLE IF NOT EXISTS enrollments (
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

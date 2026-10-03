@@ -31,6 +31,7 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
     const path = stripBase(url.pathname);
+    if (path.startsWith("/api/internal/")) return internalRoute(req, res, path);
     if (req.method === "GET" && (path === "/" || path === "/index.html")) {
       return page(res);
     }
@@ -131,6 +132,43 @@ async function start(req, res) {
     busy = null;
   });
   send(res, 200, await publicState());
+}
+
+async function extend(req, res) {
+  const body = await readJson(req);
+  const minutes = Number(body.minutes);
+  if (!Number.isInteger(minutes) || minutes < MIN_MINUTES || minutes > MAX_MINUTES) {
+    return send(res, 400, { error: `Choose ${MIN_MINUTES} to ${MAX_MINUTES} minutes` });
+  }
+  const info = await vmInfo();
+  if (!info.running) return send(res, 409, { error: "The class server is off" });
+  state.deadline = new Date(Date.now() + minutes * 60_000).toISOString();
+  state.phase = "on";
+  state.error = "";
+  save();
+  await writeHold(info.ip, state.deadline);
+  send(res, 200, await publicState());
+}
+
+async function internalRoute(req, res, path) {
+  if (!internalOk(req)) return send(res, 401, { error: "Sign in" });
+  if (path === "/api/internal/status" && req.method === "GET") return send(res, 200, await publicState());
+  if (path === "/api/internal/start" && req.method === "POST") return start(req, res);
+  if (path === "/api/internal/stop" && req.method === "POST") return stop(req, res);
+  if (path === "/api/internal/extend" && req.method === "POST") return extend(req, res);
+  return send(res, 404, { error: "Not found" });
+}
+
+function internalOk(req) {
+  if (req.headers["x-forwarded-for"]) return false;
+  const file = process.env.POWER_INTERNAL_FILE || "/var/lib/teachforth-discord/power-secret";
+  if (!existsSync(file)) return false;
+  const secret = readFileSync(file, "utf8").trim();
+  const header = String(req.headers.authorization || "");
+  if (!header.startsWith("Bearer ") || secret.length < 16) return false;
+  const given = Buffer.from(header.slice("Bearer ".length));
+  const owned = Buffer.from(secret);
+  return given.length === owned.length && timingSafeEqual(given, owned);
 }
 
 async function stop(req, res) {

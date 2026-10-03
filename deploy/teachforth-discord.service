@@ -1,0 +1,21 @@
+[Unit]
+Description=TeachForth Helper Discord bot
+After=network-online.target
+
+[Service]
+User=tfdiscord
+Group=tfdiscord
+WorkingDirectory=/opt/teachforth-discord
+Environment=DATA_DIR=/var/lib/teachforth-discord
+Environment=HOST=127.0.0.1
+Environment=PORT=8794
+Environment=POWER_URL=http://127.0.0.1:8791
+Environment=POWER_INTERNAL_FILE=/var/lib/teachforth-discord/power-secret
+Environment=CLASS_URL=http://74.248.20.108
+Environment=IDE_PUBLIC_URL=https://74.248.20.108
+ExecStart=/usr/bin/node /opt/teachforth-discord/discord-bot.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

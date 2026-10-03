@@ -73,6 +73,10 @@ Apply copies only the paths you list, and only under `public/` and `server/` on 
 
 The script that copies is the one on the branch you started the action from, not the pull request. A pull request cannot change the copy step or read the key.
 
+## Discord helper
+
+The bot runs on this VPS, not the class VM. `deploy/install-discord.sh` installs it and creates two secrets under `/var/lib/teachforth-discord`. Copy `secret` to `/var/lib/teachforth-ide/discord-secret` on the class VM, mode 600, owner `teachforth`. Do not copy the bot token or the power secret there. Put the bot token, public key, application id, and server id in `config.json`, then restart `teachforth-discord.service`. The interactions URL is `https://samsprojects.xyz/teachforth-discord/interactions`. Overlay deploy does not update the bot files. Copy `deploy/discord-bot.js` and `deploy/discord-policy.js` to `/opt/teachforth-discord` when those change.
+
 ## Authorized domains
 
 The class app saves names in `/var/lib/teachforth-ide/domains.txt`. Nginx changes only through the root helper `/usr/local/lib/teachforth/tf-domains`. Overlay deploy does not install that helper. Copy `deploy/tf-domains` to the class VM and run `deploy/install-domains.sh` as root, with the copied script as its argument. That installs the helper, the sudoers line, and certbot if it is missing. It does not replace the default site.
