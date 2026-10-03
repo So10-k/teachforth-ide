@@ -46,6 +46,12 @@ function homeJumps(me, powerUrl) {
 
 async function homePage(main, me, api, esc, powerUrl) {
   if (me.role === "student") {
+    try {
+      const fresh = await api("/api/me");
+      if (fresh?.user) Object.assign(me, fresh.user);
+    } catch {
+      // A failed refresh must not pretend the GitHub link died.
+    }
     const data = await api(`/api/folders/${me.id}`);
     const publicRepos = me.githubLinked ? await publicRepoNames(api) : new Set();
     const linked = Boolean(me.githubLinked);
@@ -85,11 +91,13 @@ async function homePage(main, me, api, esc, powerUrl) {
         ${me.role === "admin" ? `<article class="stat"><span>Teachers</span><strong>${stats.teachers}</strong></article>` : ""}
       </div>
       ${homeJumps(me, esc(powerUrl))}
+      ${endClassPanel(home)}
       <section><h2 class="unit">Live now</h2>${liveCards(home.live, esc) || `<p class="muted">Nothing is live. Book a block, promote a teacher to lead it, then start the session.</p>`}</section>
       ${home.chapters.length ? `<h2 class="unit">Chapters</h2><div class="cards">${home.chapters.map((chapter) => chapterCard(chapter, esc)).join("")}</div>` : ""}`,
   );
   bindChapters(main);
   bindProfiles(main);
+  bindEndClass(main, api);
 }
 
 async function chaptersPage(main, me, api, esc) {
@@ -633,9 +641,38 @@ function openNewProject(me, api, esc) {
 
 async function centerPage(main, api, esc) {
   const data = await api("/api/center");
+  const home = await api("/api/home");
   const live = data.blocks.filter((block) => block.status === "live");
-  main.innerHTML = page("Live class", "Students with a teacher in a live block.", liveCards(live, esc) || `<p class="muted">No live block. A chapter lead starts one from Pairing.</p>`);
+  main.innerHTML = page(
+    "Live class",
+    "Students with a teacher in a live block.",
+    `${endClassPanel(home)}${liveCards(live, esc) || `<p class="muted">No live block. A chapter lead starts one from Pairing.</p>`}`,
+  );
   bindProfiles(main);
+  bindEndClass(main, api);
+}
+
+function endClassPanel(home) {
+  if (!home?.canEndClass) return "";
+  return `<section class="panel"><h2>End class</h2><p class="muted">Save open student projects, close home links, then stop the class server.</p><button class="btn" id="end-class" type="button">End class</button><p class="error" id="end-class-note"></p></section>`;
+}
+
+function bindEndClass(main, api) {
+  const button = main.querySelector("#end-class");
+  if (!button) return;
+  button.onclick = async () => {
+    if (!window.confirm("End class? This saves open projects, closes home links, and stops the server.")) return;
+    button.disabled = true;
+    const note = main.querySelector("#end-class-note");
+    try {
+      const data = await api("/api/class/end", { method: "POST", body: {} });
+      const saved = `Saved ${data.committed || 0} project${data.committed === 1 ? "" : "s"}.`;
+      if (note) note.textContent = data.note ? `${saved} ${data.note}` : saved;
+    } catch (err) {
+      if (note) note.textContent = err.message;
+      button.disabled = false;
+    }
+  };
 }
 
 function liveCards(blocks, esc) {

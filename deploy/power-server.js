@@ -32,6 +32,7 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     const path = stripBase(url.pathname);
     if (path.startsWith("/api/internal/")) return internalRoute(req, res, path);
+    if (path === "/api/class-stop" && req.method === "POST") return classStop(req, res);
     if (req.method === "GET" && (path === "/" || path === "/index.html")) {
       return page(res);
     }
@@ -203,23 +204,66 @@ async function runStart() {
 }
 
 async function runStop() {
+  let flushFailed = false;
+  if (state.ip) {
+    const flushed = await flushClass(state.ip);
+    flushFailed = flushed === "failed";
+  }
   try {
     await az(["vm", "deallocate", "--resource-group", RG, "--name", VM], 300_000);
     state.phase = "off";
     state.deadline = null;
-    state.error = "";
+    state.error = flushFailed ? "Open projects may not have saved before the stop." : "";
     save();
   } catch (err) {
     const text = clean(err);
     if (/already deallocated|was not found|PowerState\/deallocated/i.test(text)) {
       state.phase = "off";
       state.deadline = null;
-      state.error = "";
+      state.error = flushFailed ? "Open projects may not have saved before the stop." : "";
     } else {
       state.error = text;
     }
     save();
   }
+}
+
+function flushClass(ip) {
+  if (!ip || !existsSync(KEY)) return Promise.resolve("skipped");
+  const remote = "curl -fsS -m 90 -X POST http://127.0.0.1:8080/api/internal/flush";
+  return new Promise((resolve) => {
+    execFile(
+      "ssh",
+      ["-i", KEY, "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8", `azureuser@${ip}`, remote],
+      { timeout: 100_000 },
+      (err) => resolve(err ? "failed" : "ok"),
+    );
+  });
+}
+
+const classStopHits = [];
+
+function classStopAuth(req) {
+  const file = process.env.CLASS_STOP_FILE || "/var/lib/teachforth-power/class-stop";
+  if (!existsSync(file)) return false;
+  const secret = readFileSync(file, "utf8").trim();
+  const header = String(req.headers.authorization || "");
+  if (!header.startsWith("Bearer ") || secret.length < 16) return false;
+  const given = Buffer.from(header.slice("Bearer ".length));
+  const owned = Buffer.from(secret);
+  if (given.length !== owned.length || !timingSafeEqual(given, owned)) return false;
+  const now = Date.now();
+  while (classStopHits.length && now - classStopHits[0] > 10 * 60 * 1000) classStopHits.shift();
+  if (classStopHits.length >= 3) return "limited";
+  classStopHits.push(now);
+  return true;
+}
+
+async function classStop(req, res) {
+  const auth = classStopAuth(req);
+  if (auth === "limited") return send(res, 429, { error: "Wait a few minutes" });
+  if (!auth) return send(res, 401, { error: "Sign in" });
+  return stop(req, res);
 }
 
 async function tick() {

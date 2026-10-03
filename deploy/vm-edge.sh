@@ -23,13 +23,16 @@ server {
   listen [::]:80 default_server;
   server_name _;
   client_max_body_size 20m;
-  location / {
+  # Health stays on HTTP so the power panel can check the VM without following a redirect.
+  location = /api/health {
     proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_read_timeout 3600s;
+  }
+  location / {
+    return 308 https://$host$request_uri;
   }
 }
 server {

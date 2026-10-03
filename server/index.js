@@ -3,16 +3,16 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from "
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDatabase, bumpUsage } from "./db.js";
-import { createHub, focus } from "./live.js";
-import { canAccessProject, canSeeStudent, orgRoute, recordRevision, studentsFor as sessionStudents, ROLES } from "./org.js";
+import { createHub, focus, preferBoard } from "./live.js";
+import { canAccessProject, canEndClass, canSeeStudent, orgRoute, recordRevision, studentsFor as sessionStudents, ROLES } from "./org.js";
 import { hashPassword, verifyPassword, newId, parseCookies, sessionCookie, clearCookie } from "./auth.js";
 import { zipStore } from "./zip.js";
-import { githubRoute, commitStudentProject, hydrateProject, visibleStudentProject, inspectProject, relinkProject, renameLinkedRepo, pace, studentMayOpen, pullIfGithubNewer } from "./github.js";
-import { configureHome, createHomeLink, endHomeLink, ensureHome, homeView } from "./homework.js";
+import { githubRoute, commitStudentProject, commitOpenStudentProjects, githubTokenAlive, hydrateProject, visibleStudentProject, inspectProject, relinkProject, renameLinkedRepo, pace, studentMayOpen, pullIfGithubNewer } from "./github.js";
+import { configureHome, createHomeLink, endHomeLink, endAllHomeLinks, ensureHome, homeView } from "./homework.js";
 import { normalizeTemplate, projectLanguage, starterEntries, isHiddenFile } from "./templates.js";
 import { publicSlug, publishedUrl, removeSite, siteFiles, writeSite } from "./publish.js";
 import { endRun, pushLine, startRun, waitLine } from "./runtime.js";
-import { ensureControls, fileViews, controlView, publicControl, studentWriteBlock, setFileFlag, setBoardControl, moveFlags, clearFlags, flagMap, isLeadPlus } from "./controls.js";
+import { ensureControls, fileViews, controlView, publicControl, studentWriteBlock, setFileFlag, setBoardControl, moveFlags, clearFlags, flagMap, isLeadPlus, studentMaySeePath } from "./controls.js";
 import { planSteps, startSandbox, readSandbox, writeSandboxStdin, stopSandbox } from "./sandbox.js";
 import { mintPreview, previewProject, previewBody } from "./preview-site.js";
 import { addDomain, listDomains, reapplyDomains, removeDomain } from "./domains.js";
@@ -380,9 +380,11 @@ async function route(req, res, url) {
   if (req.method === "GET" && path === "/api/health") {
     return send(res, 200, { ok: true, demo: process.env.SEED_DEMO === "1" });
   }
+  if (req.method === "POST" && path === "/api/internal/flush") return flushOpen(req, res);
   if (req.method === "POST" && path === "/api/login") return login(req, res);
   if (req.method === "POST" && path === "/api/logout") return logout(req, res);
-  if (req.method === "GET" && path === "/api/me") return send(res, 200, { user: publicUser(user) });
+  if (req.method === "GET" && path === "/api/me") return meView(res, user);
+  if (req.method === "POST" && path === "/api/class/end") return endClass(req, res, user);
   if (path === "/api/runtime/runs" && req.method === "POST") {
     requireUser(user);
     return send(res, 201, { runId: startRun(user.id) });
@@ -519,8 +521,9 @@ async function projectRoute(req, res, url, user, id, rest) {
     return send(res, 200, {
       project: projectView(project, user),
       files: editorFiles(id, user),
-      viewers: viewersOf(id),
+      viewers: viewersOf(id, user),
       controls: controlView(db, user, project),
+      board: boardFor(project),
     });
   }
   if (req.method === "GET" && rest === "/state") return projectState(res, url, user, id);
@@ -575,6 +578,7 @@ function login(req, res) {
 }
 
 function startSession(res, req, userId) {
+  if (!secure(req) && !localOnly(req)) fail(400, "Sign in on the secure site");
   const id = newId();
   const created = new Date();
   const expires = new Date(created.getTime() + 14 * 24 * 60 * 60 * 1000);
@@ -771,10 +775,10 @@ function projectState(res, url, user, id) {
     notes: "",
     lastOutput: project.last_output,
     updatedAt: project.updated_at,
-    viewers: viewersOf(id),
+    viewers: viewersOf(id, user),
   };
   if (revision !== project.revision) payload.files = editorFiles(id, user);
-  if (boardRevision !== project.board_revision) payload.board = hub.board(id) || normalizeBoard(project.board || "[]");
+  if (boardRevision !== project.board_revision) payload.board = boardFor(project);
   payload.controls = controlView(db, user, project);
   send(res, 200, payload);
 }
@@ -814,7 +818,9 @@ async function saveFile(req, res, user, project) {
   }
   const saved = loadProject(project.id);
   audit(user, "save_file", project.id, path);
-  hub.publish(project.id, "file", { path, content, revision: saved.revision, authorId: user.id });
+  hub.publish(project.id, "file", { path, content, revision: saved.revision, authorId: user.id }, (viewer, data) => (
+    studentMaySeePath(viewer?.role, data.path, flagMap(db, project.id).get(data.path)?.hidden) ? data : null
+  ));
   send(res, 200, { revision: saved.revision, updatedAt: saved.updated_at });
 }
 
@@ -897,7 +903,7 @@ async function saveBoard(req, res, user, project) {
 async function boardStroke(req, res, user, project) {
   const body = await readJson(req);
   if (user.role === "student" && publicControl(db, project.id).lockDraw) fail(403, "The teacher locked the board");
-  const doc = hub.board(project.id) || normalizeBoard(JSON.parse(loadProject(project.id).board || "[]"));
+  const doc = boardFor(project);
   const slide = doc.slides.find((item) => item.id === body.slideId) || doc.slides[doc.index] || doc.slides[0];
   if (!slide) fail(400, "No slide");
   if (body.action === "add-slide") {
@@ -950,7 +956,7 @@ function normalizeBoard(raw) {
   const slides = Array.isArray(data?.slides) && data.slides.length
     ? data.slides.slice(0, 24).map((slide, index) => ({
       id: String(slide.id || `s${index + 1}`).slice(0, 16),
-      title: String(slide.title || `Slide ${index + 1}`).slice(0, 40),
+      title: plainTitle(slide.title, `Slide ${index + 1}`),
       strokes: Array.isArray(slide.strokes) ? slide.strokes.slice(-800).map(cleanStroke).filter(Boolean) : [],
     }))
     : [{ id: "s1", title: "Slide 1", strokes: [] }];
@@ -1012,8 +1018,14 @@ function liveEvents(req, res, user, id) {
     "x-accel-buffering": "no",
   });
   res.write("retry: 2000\n\n");
-  hub.subscribe(id, res);
-  res.write(`event: hello\ndata: ${JSON.stringify({ viewers: viewersOf(id) })}\n\n`);
+  hub.subscribe(id, res, {
+    user,
+    can: () => {
+      const current = loadProject(id);
+      return Boolean(current && canAccessProject(db, user, current));
+    },
+  });
+  res.write(`event: hello\ndata: ${JSON.stringify({ viewers: viewersOf(id, user) })}\n\n`);
 }
 
 async function liveSignal(req, res, user, id) {
@@ -1034,7 +1046,11 @@ async function liveSignal(req, res, user, id) {
   };
   notePresence(id, user, cursor.file);
   focus.set(user.id, { projectId: id, file: cursor.file, at: Date.now() });
-  hub.publish(id, "cursor", cursor);
+  hub.publish(id, "cursor", cursor, (viewer, data) => (
+    studentMaySeePath(viewer?.role, data.file, flagMap(db, id).get(data.file)?.hidden)
+      ? data
+      : { ...data, file: "" }
+  ));
   send(res, 200, { ok: true });
 }
 
@@ -1395,19 +1411,84 @@ function publicUser(user) {
   };
 }
 
+async function meView(res, user) {
+  const view = publicUser(user);
+  if (view?.githubLinked) view.githubLinked = await githubTokenAlive(user.github_token);
+  send(res, 200, { user: view });
+}
+
+async function flushOpen(req, res) {
+  if (!localOnly(req)) fail(403, "Not allowed");
+  if (!pace("flush-open", 4, 10 * 60 * 1000)) fail(429, "Projects were just saved. Wait a few minutes.");
+  const saved = await commitOpenStudentProjects(db);
+  audit(null, "flush_open", null, `committed ${saved.committed}`);
+  send(res, 200, saved);
+}
+
+async function endClass(req, res, user) {
+  requireUser(user);
+  if (!canEndClass(db, user)) fail(403, "Only the session lead can end class");
+  if (!pace("end-class", 2, 10 * 60 * 1000)) fail(429, "Class was just ended. Wait a few minutes.");
+  const saved = await commitOpenStudentProjects(db, { message: "TeachForth end of class" });
+  const links = await endAllHomeLinks(db);
+  const power = await askPowerStop();
+  audit(user, "end_class", null, `committed ${saved.committed} stopped ${power.stopped}`);
+  send(res, 200, { ...saved, links, stopped: power.stopped, note: power.note });
+}
+
+async function askPowerStop() {
+  const file = process.env.CLASS_STOP_FILE || join(DATA_DIR, "class-stop");
+  if (!existsSync(file)) return { stopped: false, note: "An admin must stop the server." };
+  const secret = readFileSync(file, "utf8").trim();
+  if (secret.length < 16) return { stopped: false, note: "An admin must stop the server." };
+  const url = process.env.POWER_STOP_URL || "https://samsprojects.xyz/teachforth-power/api/class-stop";
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${secret}` },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (response.status === 409) return { stopped: true, note: "The server is already stopping." };
+    if (response.status === 429) return { stopped: false, note: "The server stop was rate limited. An admin can stop it from the power panel." };
+    if (!response.ok) return { stopped: false, note: "An admin must stop the server." };
+    return { stopped: true, note: "" };
+  } catch {
+    return { stopped: false, note: "An admin must stop the server." };
+  }
+}
+
+function boardFor(project) {
+  return preferBoard(hub.board(project.id), normalizeBoard(project.board || "[]"));
+}
+
+function plainTitle(value, fallback) {
+  const cleaned = String(value || "").replace(/[<>]/g, "").trim().slice(0, 40);
+  return cleaned || fallback;
+}
+
+function localOnly(req) {
+  if (req.headers["x-forwarded-for"] || req.headers["x-real-ip"]) return false;
+  const addr = req.socket?.remoteAddress || "";
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
+
 function notePresence(projectId, user, file = "") {
   if (!presence.has(projectId)) presence.set(projectId, new Map());
   presence.get(projectId).set(user.id, { name: user.name, role: user.role, file, at: Date.now() });
 }
 
-function viewersOf(projectId) {
+function viewersOf(projectId, user) {
   const map = presence.get(projectId);
   if (!map) return [];
   const now = Date.now();
   const viewers = [];
   for (const [id, viewer] of map) {
     if (now - viewer.at > 20_000) map.delete(id);
-    else viewers.push({ id, name: viewer.name, role: viewer.role, file: viewer.file || "" });
+    else {
+      let file = viewer.file || "";
+      if (!studentMaySeePath(user?.role, file, flagMap(db, projectId).get(file)?.hidden)) file = "";
+      viewers.push({ id, name: viewer.name, role: viewer.role, file });
+    }
   }
   return viewers;
 }

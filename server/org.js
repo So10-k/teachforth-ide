@@ -31,6 +31,14 @@ export function canViewProfile(db, user, studentId) {
   return false;
 }
 
+export function canEndClass(db, user) {
+  if (!user || user.role === "student" || user.role === "chapter_lead") return false;
+  if (user.role === "admin") return true;
+  return Boolean(db.prepare(
+    "SELECT 1 AS ok FROM blocks WHERE status = 'live' AND lead_teacher_id = ?",
+  ).get(user.id));
+}
+
 export function canAccessProject(db, user, project) {
   if (!user || !project) return false;
   if (project.owner_id === user.id || user.role === "admin") return true;
@@ -112,7 +120,11 @@ export async function orgRoute(ctx, path) {
   if (pair && req.method === "DELETE") return removePair(ctx, Number(pair[1]));
   if (path === "/api/center" && req.method === "GET") return send(res, 200, center(db, user));
   const folder = path.match(/^\/api\/folders\/(\d+)$/);
-  if (folder && req.method === "GET") return send(res, 200, folderOf(db, user, Number(folder[1]), ctx.projectView));
+  if (folder && req.method === "GET") {
+    const body = folderOf(db, user, Number(folder[1]), ctx.projectView);
+    if (body.preview) ctx.audit(user, "view_student_code", null, String(folder[1]));
+    return send(res, 200, body);
+  }
   const report = path.match(/^\/api\/folders\/(\d+)\/reports$/);
   if (report && req.method === "POST") return createReport(ctx, Number(report[1]));
   if (path === "/api/people" && req.method === "GET") {
@@ -436,8 +448,10 @@ function folderOf(db, user, studentId, projectView) {
     projects: projects.map((project) => projectView(project, user)),
   };
   if (user.role === "student") return payload;
-  payload.reports = reportsFor(db, studentId);
-  payload.preview = buildReport(db, studentId, true).diff;
+  if (user.role === "admin" || canSeeStudent(db, user, studentId)) {
+    payload.reports = reportsFor(db, studentId);
+    payload.preview = buildReport(db, studentId, true).diff;
+  }
   return payload;
 }
 
@@ -688,6 +702,7 @@ function homePayload(db, user) {
     },
     live,
     chapters: chapters.map((chapter) => ({ id: chapter.id, name: chapter.name, place: chapter.place || "" })),
+    canEndClass: canEndClass(db, user),
   };
 }
 

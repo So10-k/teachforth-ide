@@ -38,6 +38,8 @@ if [ "$age" -lt "$limit" ]; then
   exit 0
 fi
 
+logger -t teachforth-ide "idle for ${age}s, saving open projects"
+curl -fsS -m 90 -X POST http://127.0.0.1:8080/api/internal/flush || logger -t teachforth-ide "flush failed, still deallocating"
 logger -t teachforth-ide "idle for ${age}s, deallocating"
 # Guest shutdown leaves the VM allocated, so Azure keeps charging for compute.
 # Deallocate through the VM identity. If that is not ready yet, try again next tick.

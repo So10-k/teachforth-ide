@@ -1,4 +1,6 @@
-import { displayTitle, githubScope, isTeachforthRepo, keptLocalFiles, parseTeachforthCode, pace, repoNameFor, repoNeedsPrivate, teachforthMarker, visibleStudentProject } from "./github.js";
+import { displayTitle, githubScope, isTeachforthRepo, keptLocalFiles, oauthStateMatches, parseTeachforthCode, pace, repoNameFor, repoNeedsPrivate, teachforthMarker, visibleStudentProject } from "./github.js";
+import { preferBoard } from "./live.js";
+import { studentMaySeePath } from "./controls.js";
 import { safeRel } from "../deploy/home-server.js";
 import { planSteps } from "./sandbox.js";
 import { rewriteHtml } from "./preview-site.js";
@@ -100,6 +102,11 @@ try { safeRel("../meta.json"); } catch { badHomePath = true; }
 assert(safeRel("src/index.html") === "src/index.html" && badHomePath, "home paths stay inside the session");
 assert(repoNeedsPrivate({ private: false }) === true && repoNeedsPrivate({ private: true }) === false, "only a public repository is blocked");
 assert(githubScope().includes("repo") && githubScope().includes("delete_repo"), "private repositories and visibility changes stay in scope");
+assert(oauthStateMatches("tf_github=abc", "abc") && !oauthStateMatches("tf_github=abc", "abd") && !oauthStateMatches("", "abc"), "github state stays with the browser");
+assert(preferBoard(null, { slides: [{ strokes: [{ id: "a" }] }] }).slides[0].strokes.length === 1, "stored board is used when nothing is live");
+assert(preferBoard({ slides: [{ strokes: [] }] }, { slides: [{ strokes: [{ id: "a" }] }] }).slides[0].strokes[0].id === "a", "empty live board does not erase saved strokes");
+assert(preferBoard({ slides: [{ strokes: [{ id: "b" }] }] }, { slides: [{ strokes: [{ id: "a" }] }] }).slides[0].strokes[0].id === "b", "live strokes win");
+assert(!studentMaySeePath("student", ".teachforth", false) && !studentMaySeePath("student", "notes.md", true) && studentMaySeePath("teacher", ".teachforth", false), "students do not receive hidden files");
 
 try {
   await waitForHealth();
@@ -140,6 +147,8 @@ try {
     body: { strokes: [{ color: "#a334cb", points: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }] },
   });
   assert(board.boardRevision >= 2, "board saved");
+  const reloaded = await send(`/api/projects/${opened.project.id}`, { cookie: teacher.cookie });
+  assert(reloaded.board?.slides?.[0]?.strokes?.length, "opening a project returns the board");
 
   const zipRes = await fetch(`${base}/api/projects/${opened.project.id}/export.zip`, {
     headers: { cookie: teacher.cookie },
@@ -610,6 +619,32 @@ try {
   assert(badGuild.status === 400, "discord server id must be digits");
   const emptyGuild = await send("/api/discord/setup", { method: "POST", cookie: admin.cookie, body: { guildId: "" }, ok: false });
   assert(emptyGuild.status === 502, "clearing the discord server still needs the helper");
+
+  const studentEnd = await send("/api/class/end", { method: "POST", cookie: student.cookie, body: {}, ok: false });
+  assert(studentEnd.status === 403, "student cannot end class");
+  const chapterLead = await login("chapter@teachforth.local", "chapter-demo-1");
+  const chapterEnd = await send("/api/class/end", { method: "POST", cookie: chapterLead.cookie, body: {}, ok: false });
+  assert(chapterEnd.status === 403, "chapter lead cannot end class");
+  const chapterCommit = await send(`/api/projects/${opened.project.id}/commit`, { method: "POST", cookie: chapterLead.cookie, ok: false });
+  assert(chapterCommit.status === 403, "chapter lead cannot force commit");
+  const quiet = await send("/api/users", {
+    method: "POST",
+    cookie: admin.cookie,
+    body: { name: "Quiet Student", email: "quiet@teachforth.local", role: "student", password: "quiet-pass-1" },
+  });
+  await send(`/api/chapters/${chapter.chapters[0].id}/members`, { method: "POST", cookie: admin.cookie, body: { userId: quiet.user.id } });
+  const quietFolder = await send(`/api/folders/${quiet.user.id}`, { cookie: chapterLead.cookie });
+  assert(!quietFolder.reports && !quietFolder.preview, "chapter lead does not see code outside a live block");
+  const leadHome = await send("/api/home", { cookie: lead.cookie });
+  const chapterHome = await send("/api/home", { cookie: chapterLead.cookie });
+  assert(leadHome.canEndClass === true && chapterHome.canEndClass === false, "only the session lead can end class");
+  const classEnded = await send("/api/class/end", { method: "POST", cookie: lead.cookie, body: {} });
+  assert(classEnded.stopped === false && /admin must stop/i.test(classEnded.note || ""), "end class does not stop without the power secret");
+  const flushed = await fetch(`${base}/api/internal/flush`, {
+    method: "POST",
+    headers: { "x-forwarded-for": "1.2.3.4" },
+  });
+  assert(flushed.status === 403, "flush rejects a forwarded request");
 
   console.log("selftest ok");
   console.log("outsider blocked", outsider.user.email);

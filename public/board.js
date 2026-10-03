@@ -71,16 +71,21 @@ export function openBoard({ state, api, publish, canDraw }) {
   }
   function paintFilm() {
     root.querySelector("#slide-name").textContent = slide()?.title || "";
-    root.querySelector("#film").innerHTML = doc().slides.map((item, index) =>
-      `<button type="button" class="${index === doc().index ? "on" : ""}" data-index="${index}">${item.title}</button>`,
-    ).join("");
-    for (const button of root.querySelectorAll("[data-index]")) {
+    const film = root.querySelector("#film");
+    film.replaceChildren();
+    doc().slides.forEach((item, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = index === doc().index ? "on" : "";
+      button.dataset.index = String(index);
+      button.textContent = item.title || "";
       button.onclick = () => {
-        doc().index = Number(button.dataset.index);
+        doc().index = index;
         publish({ action: "select", index: doc().index });
         paint();
       };
-    }
+      film.append(button);
+    });
   }
   function paintObjects() {
     const strokes = (slide()?.strokes || []).filter((item) => item.tool === "text" || item.tool === "image");

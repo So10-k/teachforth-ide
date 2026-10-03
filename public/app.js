@@ -535,7 +535,7 @@ async function editorView(id) {
     files: opened.files,
     active: opened.files[0]?.path,
     dirty: false,
-    boardDoc: null,
+    boardDoc: opened.board?.slides ? opened.board : null,
     remotes: new Map(),
     source: null,
   };

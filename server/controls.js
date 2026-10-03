@@ -20,17 +20,15 @@ export function ensureControls(db) {
   `);
 }
 
+export function studentMaySeePath(role, path, hiddenFlag) {
+  if (role !== "student") return true;
+  if (isHiddenFile(path) || hiddenFlag) return false;
+  return true;
+}
+
 export function isLeadPlus(db, user, studentId) {
   if (!user || !studentId || user.role === "student" || user.id === studentId) return false;
   if (user.role === "admin") return true;
-  if (user.role === "chapter_lead") {
-    return Boolean(db.prepare(
-      `SELECT 1 AS ok FROM pairs p
-       JOIN blocks b ON b.id = p.block_id
-       JOIN chapter_staff s ON s.chapter_id = b.chapter_id
-       WHERE s.user_id = ? AND b.status = 'live' AND p.student_id = ?`,
-    ).get(user.id, studentId));
-  }
   return Boolean(db.prepare(
     `SELECT 1 AS ok FROM blocks b
      JOIN pairs p ON p.block_id = b.id

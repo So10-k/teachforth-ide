@@ -1,5 +1,5 @@
-import { createHash, randomBytes } from "node:crypto";
-import { newId } from "./auth.js";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { newId, parseCookies } from "./auth.js";
 
 const SCOPE = "repo delete_repo read:user user:email";
 const MONITOR_LOGIN = "so10-k";
@@ -170,6 +170,74 @@ export async function commitStudentProject(db, user, project, files, options = {
   return result;
 }
 
+export async function commitOpenStudentProjects(db, options = {}) {
+  const limit = Math.min(40, Number(options.limit) || 40);
+  const deadline = Date.now() + (Number(options.budgetMs) || 100_000);
+  const rows = db.prepare(
+    `SELECT p.* FROM projects p
+     JOIN users u ON u.id = p.owner_id
+     WHERE p.open = 1 AND p.kind = 'github' AND u.role = 'student' AND p.github_repo != ''
+     ORDER BY p.updated_at DESC
+     LIMIT ?`,
+  ).all(limit);
+  const result = { committed: 0, skipped: 0, failed: 0 };
+  for (const project of rows) {
+    if (Date.now() > deadline) {
+      result.skipped += 1;
+      continue;
+    }
+    const files = db.prepare("SELECT path, content FROM files WHERE project_id = ?").all(project.id);
+    if (!files.length) {
+      result.skipped += 1;
+      continue;
+    }
+    try {
+      await commitStudentProject(db, { id: 0, role: "admin" }, project, files, {
+        force: true,
+        keep: true,
+        message: options.message || `TeachForth class save ${new Date().toISOString().slice(0, 16)}`,
+      });
+      result.committed += 1;
+    } catch (err) {
+      if (err.status === 429) result.skipped += 1;
+      else result.failed += 1;
+    }
+  }
+  return result;
+}
+
+const tokenHealth = new Map();
+
+export async function githubTokenAlive(token) {
+  if (!token) return false;
+  const id = createHash("sha256").update(String(token)).digest("hex").slice(0, 16);
+  const hit = tokenHealth.get(id);
+  if (hit && hit.until > Date.now()) return hit.alive;
+  let alive = true;
+  let ttl = 60_000;
+  try {
+    const response = await fetch("https://api.github.com/user", {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token}`,
+        "user-agent": "teachforth-ide",
+      },
+      signal: AbortSignal.timeout(4_000),
+    });
+    alive = response.status !== 401;
+    ttl = 10 * 60 * 1000;
+  } catch {
+    alive = true;
+  }
+  tokenHealth.set(id, { alive, until: Date.now() + ttl });
+  return alive;
+}
+
+export function oauthStateMatches(cookieHeader, state) {
+  const cookies = parseCookies(cookieHeader);
+  return sameSecret(cookies.tf_github, state);
+}
+
 export async function inspectProject(db, project) {
   const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(project.owner_id);
   const issues = [];
@@ -321,6 +389,7 @@ function startOauth(ctx, purpose, userId) {
   url.searchParams.set("redirect_uri", callback);
   url.searchParams.set("scope", SCOPE);
   url.searchParams.set("state", state);
+  res.setHeader("Set-Cookie", githubStateCookie(state, req));
   res.writeHead(302, { location: url.toString() });
   res.end();
 }
@@ -331,8 +400,14 @@ async function callback(ctx) {
   const state = url.searchParams.get("state") || "";
   const code = url.searchParams.get("code") || "";
   const row = db.prepare("SELECT * FROM github_states WHERE state = ?").get(state);
+  const expired = row && row.expires_at < new Date().toISOString();
+  const bound = oauthStateMatches(req.headers.cookie, state);
+  if (expired) db.prepare("DELETE FROM github_states WHERE state = ?").run(state);
+  if (!row || expired || !code || !bound) return go(res, row?.purpose === "login" ? "/?github=unknown" : "/#/github?error=1");
+  if ((row.purpose || "connect") === "connect" && ctx.user?.id !== row.user_id) {
+    return go(res, "/#/github?error=1");
+  }
   db.prepare("DELETE FROM github_states WHERE state = ? OR expires_at < ?").run(state, new Date().toISOString());
-  if (!row || row.expires_at < new Date().toISOString() || !code) return go(res, row?.purpose === "login" ? "/?github=unknown" : "/#/github?error=1");
   try {
     const config = githubConfig(db);
     const token = await exchange(config, code, `${originOf(req)}/api/github/callback`);
@@ -340,8 +415,10 @@ async function callback(ctx) {
     profile.email = await primaryEmail(token);
     if ((row.purpose || "connect") === "login") return finishLogin(ctx, profile, token);
     attachGithub(db, row.user_id, profile, token);
+    rememberCookie(res, clearGithubCookie(req));
     go(res, "/#/github");
   } catch {
+    rememberCookie(res, clearGithubCookie(req));
     go(res, row.purpose === "login" ? "/?github=unknown" : "/#/github?error=1");
   }
 }
@@ -357,6 +434,7 @@ function finishLogin(ctx, profile, token) {
   if (!user || user.role !== "student") return go(res, "/?github=unknown");
   attachGithub(db, user.id, profile, token);
   ctx.startSession(res, user.id);
+  rememberCookie(res, clearGithubCookie(ctx.req));
   go(res, "/#/");
 }
 
@@ -749,6 +827,34 @@ function setting(db, key) {
 
 function putSetting(db, key, value) {
   db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+}
+
+function githubStateCookie(state, req) {
+  const bits = ["tf_github=" + state, "HttpOnly", "SameSite=Lax", "Path=/api/github", "Max-Age=600"];
+  if (cookieSecure(req)) bits.push("Secure");
+  return bits.join("; ");
+}
+
+function clearGithubCookie(req) {
+  const bits = ["tf_github=", "HttpOnly", "SameSite=Lax", "Path=/api/github", "Max-Age=0"];
+  if (cookieSecure(req)) bits.push("Secure");
+  return bits.join("; ");
+}
+
+function cookieSecure(req) {
+  return process.env.COOKIE_SECURE === "1" || req.headers["x-forwarded-proto"] === "https";
+}
+
+function sameSecret(left, right) {
+  const a = Buffer.from(String(left || ""));
+  const b = Buffer.from(String(right || ""));
+  return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+}
+
+function rememberCookie(res, value) {
+  const prev = res.getHeader("set-cookie");
+  const list = !prev ? [] : Array.isArray(prev) ? prev : [String(prev)];
+  res.setHeader("Set-Cookie", [...list, value]);
 }
 
 function go(res, location) {

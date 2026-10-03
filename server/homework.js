@@ -95,6 +95,25 @@ export async function endHomeLink(db, user, project) {
   return { ok: true };
 }
 
+export async function endAllHomeLinks(db) {
+  const rows = db.prepare("SELECT project_id, token FROM home_links").all();
+  if (!rows.length) return { ended: 0, failed: 0 };
+  const secret = homeSecret();
+  if (!secret) return { ended: 0, failed: rows.length };
+  let ended = 0;
+  let failed = 0;
+  for (const row of rows) {
+    try {
+      await pushHome("DELETE", `?id=${encodeURIComponent(row.token)}`, null, secret);
+      db.prepare("DELETE FROM home_links WHERE project_id = ?").run(row.project_id);
+      ended += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+  return { ended, failed };
+}
+
 function homeSecret() {
   if (process.env.HOME_PUSH_TOKEN) return process.env.HOME_PUSH_TOKEN.trim();
   if (!tokenFile || !existsSync(tokenFile)) return "";
