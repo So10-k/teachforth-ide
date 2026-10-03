@@ -553,6 +553,7 @@ try {
   assert(cleared.domains.length === 0 && readFileSync(join(dir, "domains.txt"), "utf8") === "", "removing a domain clears the helper list");
 
   assert(commandAllowed("power", "admin") && !commandAllowed("power", "teacher") && !commandAllowed("live", "student") && commandAllowed("share", "student") && !commandAllowed("home", "student") && commandAllowed("home", "teacher"), "discord command roles");
+  assert(commandAllowed("login", "") && commandAllowed("ask", ""), "helpdesk registration is open");
   assert(!helpText("student").includes("/power") && helpText("admin").includes("/logins"), "discord help follows the role");
   const sharedCard = shareCard({ title: "Cards", language: "web", owner: "Sam", url: "https://74.248.20.108/#/project/1" });
   assert(sharedCard.title === "Cards" && !JSON.stringify(sharedCard).includes("password") && !JSON.stringify(sharedCard).includes("token"), "share card has no secrets");

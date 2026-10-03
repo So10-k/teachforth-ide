@@ -25,11 +25,13 @@ const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8794);
 const POWER_URL = process.env.POWER_URL || "http://127.0.0.1:8791";
 const POWER_FILE = process.env.POWER_INTERNAL_FILE || join(DATA, "power-secret");
-const CLASS_URL = (process.env.CLASS_URL || "http://74.248.20.108").replace(/\/$/, "");
-const IDE_URL = (process.env.IDE_PUBLIC_URL || "https://74.248.20.108").replace(/\/$/, "");
+const CLASS_URL = (process.env.CLASS_URL || "https://74-248-20-108.sslip.io").replace(/\/$/, "");
+const IDE_URL = (process.env.IDE_PUBLIC_URL || "https://74-248-20-108.sslip.io").replace(/\/$/, "");
 const CONFIG_FILE = join(DATA, "config.json");
 const ROLES_FILE = join(DATA, "roles.json");
 const SECRET_FILE = join(DATA, "secret");
+const DESK_COMMANDS = new Set(["ask", "desk", "reply", "note", "close", "snippet", "logs", "block", "contact", "claim"]);
+const DM_COMMANDS = new Set(["ask", "help", "class", "link", "me", "unlink"]);
 const hits = new Map();
 const loginSeen = new Map();
 
@@ -50,11 +52,23 @@ const server = createServer(async (req, res) => {
   }
 });
 
+const desk = {
+  command: async () => say("Use the helpdesk", "Send the bot a direct message, or open the helpdesk."),
+  tick: async () => {},
+  intake: async () => {},
+  edited: async () => {},
+  deleted: async () => {},
+};
+
 server.listen(PORT, HOST, () => {
   console.log(`TeachForth Helper on http://${HOST}:${PORT}`);
   register().catch(() => console.error("command register failed"));
-  connectGateway();
+  if (process.env.HELPER_GATEWAY !== "0") connectGateway();
 });
+
+setInterval(() => {
+  if (process.env.DESK === "1") desk.tick(loadConfig()).catch(() => {});
+}, 30_000);
 
 async function interaction(req, res) {
   const raw = await readRaw(req);
@@ -77,7 +91,10 @@ function commandPayload(body) {
   const config = loadConfig();
   if (body.type === 1) return { reply: { type: 1 } };
   if (body.type !== 2) return now(say("I don't know that one", "Try /class or /help."));
-  if (config.guildId && body.guild_id !== config.guildId) {
+  if (!body.guild_id && !DM_COMMANDS.has(body.data?.name || "")) {
+    return now(say("Use that in the server", "Open the TeachForth Discord for staff tools."));
+  }
+  if (config.guildId && body.guild_id && body.guild_id !== config.guildId) {
     return now(say("Wrong server", "Use me in the TeachForth Discord."));
   }
   const name = body.data?.name || "";
@@ -99,12 +116,20 @@ async function run(name, body, id) {
     return classCard(status, context);
   }
   if (command === "link") return link(id, actorName(body), optionValue(body.data, "code"));
+  if (command === "login") return helpdeskLogin(id, actorName(body), optionValue(body.data, "code"), body.member?.permissions);
   if (name === "chapters" || name === "usage") return say("That one's gone", "Try /class, /find, or /projects.");
+  if (process.env.DESK === "1" && DESK_COMMANDS.has(command)) {
+    const live = await liveRole(id);
+    const currentRole = live.role || cachedRole(id);
+    if (!commandAllowed(command, currentRole)) {
+      return currentRole ? say("That's not yours", "Only staff can use the desk tools.") : say("Link your account", "Open the IDE, grab a code from the account menu, then use /link.");
+    }
+    return desk.command(command, body, id, loadConfig());
+  }
   const local = command === "power" || command === "logins";
   const role = local ? { role: adminRole(id), off: false } : await liveRole(id);
-  if (!local && role.off && command !== "power") {
-    return say("Class is off", "I can still tell you if class is on with /class. Projects and people show up once it's running.");
-  }
+  if (!local && role.off) return classMissing();
+  if (!local && role.unreachable && !role.role) return classMissing();
   const current = role.role;
   if (!commandAllowed(command, current)) {
     if (local) return say("Link an admin first", "Link once while class is on. After that, you can start it from here even when it's off.");
@@ -122,10 +147,31 @@ async function run(name, body, id) {
   return say("I don't know that one", "Try /class or /help.");
 }
 
+async function helpdeskLogin(id, name, code, permissions) {
+  if (!pace(`login:${id}`, 8, 10 * 60_000)) return say("Slow down", "Wait a few minutes before registering again.");
+  const secret = readFile(process.env.HELPDESK_SECRET_FILE || "/var/lib/teachforth-helper/internal-secret");
+  if (!secret) return say("Helpdesk isn't up", "Try again in a minute.");
+  try {
+    const res = await fetch(`${process.env.HELPDESK_URL || "http://127.0.0.1:8795"}/internal/register`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+      body: JSON.stringify({ discordId: id, name, code: code || "", permissions: String(permissions || "") }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return say("That didn't register", plain(data.error || "Try again in a minute.", 180));
+    const lines = [data.message || "You're registered."];
+    if (data.code) lines.push(`Code: ${data.code}`);
+    return say("You're registered", lines.join(" "), [{ label: "Open helpdesk", url: "https://teachforthhelp.samsprojects.xyz" }]);
+  } catch {
+    return say("Helpdesk isn't up", "Try again in a minute.");
+  }
+}
+
 async function link(id, name, code) {
   if (!pace(`link:${id}`, 5, 10 * 60_000)) return say("Slow down", "Wait a few minutes before trying another code.");
   const result = await classSend("POST", "/api/discord/claim", { code, discordId: id, discordName: name });
-  if (result.status === 0) return say("Class is off", "I can't link anyone until class is running. An admin can start it with /power.");
+  if (result.status === 0) return classMissing();
   if (result.status !== 200) return say("That code didn't work", "Make a new one from the account menu in the IDE. Codes last 10 minutes.");
   remember(id, result.data.role);
   const role = result.data.role;
@@ -138,7 +184,7 @@ async function link(id, name, code) {
 
 async function unlink(id) {
   const result = await classSend("POST", "/api/discord/unlink", { discordId: id });
-  if (result.status === 0) return say("Class is off", "I can't remove the link until class is running.");
+  if (result.status === 0) return classMissing();
   forget(id);
   return say("Unlinked", "This Discord account isn't connected to TeachForth anymore.");
 }
@@ -408,7 +454,7 @@ function helpMessage(role) {
 }
 
 function fromApi(result, title = "That didn't work") {
-  if (result.status === 0) return say("Class is off", "I can't see that until class is running. An admin can start it with /power.");
+  if (result.status === 0) return classMissing();
   if (result.status === 404 && /not linked/i.test(result.data?.error || "")) {
     return say("Link your account", "Open the IDE, grab a code from the account menu, then use /link.");
   }
@@ -443,10 +489,26 @@ function stamp(iso) {
 
 async function liveRole(id) {
   const result = await classGet(`/api/discord/profile?discordId=${id}`);
-  if (result.status === 0) return { role: cachedRole(id), off: true };
-  if (result.status !== 200) return { role: "", off: false };
-  remember(id, result.data.role);
-  return { role: result.data.role, off: false };
+  if (result.status === 200) {
+    remember(id, result.data.role);
+    return { role: result.data.role, off: false };
+  }
+  if (result.status === 0) {
+    const status = await power("GET", "/api/internal/status");
+    const phase = status.data?.phase;
+    const up = status.ok && (phase === "on" || phase === "starting" || status.data?.running);
+    return { role: cachedRole(id), off: !up, unreachable: up };
+  }
+  return { role: "", off: false };
+}
+
+async function classMissing() {
+  const status = await power("GET", "/api/internal/status");
+  const phase = status.data?.phase;
+  if (status.ok && (phase === "on" || phase === "starting" || status.data?.running)) {
+    return say("I can't reach class", "The server is on, but I couldn't talk to it. Try again in a minute.");
+  }
+  return say("Class is off", "I can still tell you if class is on with /class. Projects and people show up once it's running.");
 }
 
 function adminRole(id) {
@@ -482,7 +544,7 @@ async function classGet(path) {
   return classSend("GET", path);
 }
 
-async function classSend(method, path, body, timeout = 4000) {
+async function classSend(method, path, body, timeout = 8000) {
   const secret = readSecret();
   if (!secret) return { status: 0, data: { error: "The class server is off." } };
   try {
@@ -514,13 +576,16 @@ async function power(method, path, body) {
   }
 }
 
-async function discord(path, body) {
+async function discord(path, body, method = "POST") {
   const token = loadConfig().token;
-  if (!token) return { ok: false, data: {} };
+  if (!token) return { ok: false, status: 0, data: {} };
   const res = await fetch(`https://discord.com/api/v10/${path}`, {
-    method: "POST",
-    headers: { authorization: `Bot ${token}`, "content-type": "application/json" },
-    body: JSON.stringify(body),
+    method,
+    headers: {
+      authorization: `Bot ${token}`,
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(8000),
   });
   return { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) };
@@ -551,7 +616,7 @@ async function register() {
   if (!config.token || !config.applicationId) return;
   if (config.guildId) {
     await putCommands(`/applications/${config.applicationId}/guilds/${config.guildId}/commands`, COMMANDS);
-    await putCommands(`/applications/${config.applicationId}/commands`, []);
+    await putCommands(`/applications/${config.applicationId}/commands`, COMMANDS.filter((item) => DM_COMMANDS.has(item.name)));
     return;
   }
   await putCommands(`/applications/${config.applicationId}/commands`, COMMANDS);
@@ -582,9 +647,11 @@ function loadConfig() {
       applicationId: String(parsed.applicationId || ""),
       guildId: String(parsed.guildId || ""),
       loginChannelId: String(parsed.loginChannelId || ""),
+      deskChannelId: String(parsed.deskChannelId || ""),
+      logChannelId: String(parsed.logChannelId || ""),
     };
   } catch {
-    return { token: "", publicKey: "", applicationId: "", guildId: "", loginChannelId: "" };
+    return { token: "", publicKey: "", applicationId: "", guildId: "", loginChannelId: "", deskChannelId: "", logChannelId: "" };
   }
 }
 
@@ -644,6 +711,7 @@ let gatewayStop = false;
 let gatewayLive = false;
 let gatewayTries = 0;
 let gatewayTimer;
+let gatewayIntents = 1 | (1 << 9) | (1 << 12) | (1 << 15);
 
 function connectGateway() {
   const config = loadConfig();
@@ -688,7 +756,7 @@ function connectGateway() {
         op: 2,
         d: {
           token: config.token,
-          intents: 1,
+          intents: gatewayIntents,
           properties: { os: "linux", browser: "teachforth", device: "teachforth" },
         },
       }));
@@ -696,6 +764,12 @@ function connectGateway() {
       console.log("discord gateway ready");
     } else if (packet.op === 0 && packet.t === "INTERACTION_CREATE") {
       gatewayCommand(packet.d).catch(() => {});
+    } else if (process.env.DESK === "1" && packet.op === 0 && packet.t === "MESSAGE_CREATE") {
+      desk.intake(packet.d, loadConfig()).catch(() => {});
+    } else if (process.env.DESK === "1" && packet.op === 0 && packet.t === "MESSAGE_UPDATE") {
+      desk.edited(packet.d).catch(() => {});
+    } else if (process.env.DESK === "1" && packet.op === 0 && packet.t === "MESSAGE_DELETE") {
+      desk.deleted(packet.d).catch(() => {});
     } else if (packet.op === 7 || packet.op === 9) {
       ws.close();
     }
@@ -704,6 +778,13 @@ function connectGateway() {
     stopBeat();
     gatewayLive = false;
     const code = Number(event.code || 0);
+    if (code === 4014 && gatewayIntents !== 1) {
+      gatewayIntents = 1;
+      gatewayTries = 0;
+      console.error("discord message intent is off; /ask still works");
+      scheduleGateway();
+      return;
+    }
     if (code === 4004 || (code >= 4010 && code <= 4014)) {
       gatewayStop = true;
       console.error("discord login failed");

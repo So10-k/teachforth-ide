@@ -6,6 +6,11 @@ export const COLOR = 0x7a1fa3;
 
 export const COMMANDS = [
   { name: "help", description: "What you can do here" },
+  {
+    name: "login",
+    description: "Register for the TeachForth helpdesk",
+    options: [{ name: "code", description: "Code from the helpdesk, if you have one", type: 3, required: false }],
+  },
   { name: "class", description: "See if class is on, and open the IDE" },
   {
     name: "link",
@@ -54,6 +59,125 @@ export const COMMANDS = [
     ],
   },
   {
+    name: "ask",
+    description: "Message the teachers",
+    dm_permission: true,
+    options: [{ name: "message", description: "What you need", type: 3, required: true }],
+  },
+  {
+    name: "desk",
+    description: "Choose where student messages open",
+    options: [
+      {
+        name: "action",
+        description: "What to do",
+        type: 3,
+        required: true,
+        choices: [
+          { name: "here", value: "here" },
+          { name: "off", value: "off" },
+          { name: "status", value: "status" },
+          { name: "logs", value: "logs" },
+          { name: "age", value: "age" },
+        ],
+      },
+      { name: "days", description: "Minimum Discord account age, for age", type: 4, required: false },
+    ],
+  },
+  {
+    name: "reply",
+    description: "Write back to the student",
+    options: [
+      { name: "message", description: "What they should see", type: 3, required: true },
+      { name: "anonymous", description: "Hide your name", type: 5, required: false },
+    ],
+  },
+  {
+    name: "note",
+    description: "Leave a staff note the student does not see",
+    options: [{ name: "message", description: "Note", type: 3, required: true }],
+  },
+  {
+    name: "close",
+    description: "Close this student thread",
+    options: [
+      { name: "message", description: "Closing note for the student", type: 3, required: false },
+      { name: "in", description: "Delay, such as 30m or 2h", type: 3, required: false },
+      { name: "silent", description: "Do not tell the student", type: 5, required: false },
+    ],
+  },
+  {
+    name: "snippet",
+    description: "Save or send a short reply",
+    options: [
+      {
+        name: "action",
+        description: "What to do",
+        type: 3,
+        required: true,
+        choices: [
+          { name: "add", value: "add" },
+          { name: "send", value: "send" },
+          { name: "show", value: "show" },
+          { name: "remove", value: "remove" },
+          { name: "list", value: "list" },
+        ],
+      },
+      { name: "name", description: "Short name", type: 3, required: false },
+      { name: "text", description: "Reply text, for add", type: 3, required: false },
+    ],
+  },
+  {
+    name: "logs",
+    description: "Read a past desk thread",
+    options: [
+      { name: "name", description: "Student or Discord name", type: 3, required: false },
+      { name: "query", description: "Words to find", type: 3, required: false },
+    ],
+  },
+  {
+    name: "block",
+    description: "Stop or allow desk messages from someone",
+    options: [
+      {
+        name: "action",
+        description: "What to do",
+        type: 3,
+        required: true,
+        choices: [
+          { name: "add", value: "add" },
+          { name: "remove", value: "remove" },
+        ],
+      },
+      { name: "user", description: "Discord account", type: 6, required: true },
+      { name: "reason", description: "Why, for add", type: 3, required: false },
+    ],
+  },
+  {
+    name: "contact",
+    description: "Open a desk thread with someone",
+    options: [
+      { name: "user", description: "Discord account", type: 6, required: true },
+      { name: "message", description: "First message", type: 3, required: false },
+    ],
+  },
+  {
+    name: "claim",
+    description: "Take or release this desk thread",
+    options: [
+      {
+        name: "action",
+        description: "What to do",
+        type: 3,
+        required: true,
+        choices: [
+          { name: "take", value: "take" },
+          { name: "release", value: "release" },
+        ],
+      },
+    ],
+  },
+  {
     name: "logins",
     description: "Choose where sign-ins show up",
     options: [
@@ -72,10 +196,10 @@ export const COMMANDS = [
   },
 ];
 
-const OPEN = new Set(["help", "class", "link", "ping", "status"]);
+const OPEN = new Set(["help", "class", "link", "ping", "status", "ask", "login"]);
 const LINKED = new Set(["unlink", "me", "whoami", "github", "projects", "share"]);
-const STAFF = new Set(["live", "find", "lookup", "home"]);
-const ADMIN = new Set(["power", "logins"]);
+const STAFF = new Set(["live", "find", "lookup", "home", "reply", "note", "close", "snippet", "logs", "block", "contact", "claim"]);
+const ADMIN = new Set(["power", "logins", "desk"]);
 
 export function commandAllowed(name, role) {
   if (OPEN.has(name)) return true;
@@ -89,10 +213,14 @@ export function commandAllowed(name, role) {
 export function helpText(role) {
   const lines = [
     "Ask if class is on with /class, open your work with /projects, or share a project in the channel with /share.",
-    "Connect this account first: grab a code from the IDE account menu, then /link.",
+    "Connect this account first: grab a code from the IDE account menu, then /link. Teachers register for the helpdesk with /login.",
   ];
-  if (role && role !== "student") lines.push("You can see who's live, find a student, and send someone a private home link.");
-  if (role === "admin") lines.push("You can start class with /power, and pick a sign-in channel with /logins.");
+  lines.splice(1, 0, "Message the teachers with /ask, or just send me a direct message.");
+  if (role && role !== "student") {
+    lines.push("You can see who's live, find a student, and send someone a private home link.");
+    lines.push("In a desk thread, type to write back. /note stays private, /close ends it, and /logs reads old ones.");
+  }
+  if (role === "admin") lines.push("You can start class with /power, pick a sign-in channel with /logins, and open the desk with /desk here.");
   return lines.join(" ");
 }
 

@@ -11,8 +11,12 @@ Environment=HOST=127.0.0.1
 Environment=PORT=8794
 Environment=POWER_URL=http://127.0.0.1:8791
 Environment=POWER_INTERNAL_FILE=/var/lib/teachforth-discord/power-secret
-Environment=CLASS_URL=http://74.248.20.108
-Environment=IDE_PUBLIC_URL=https://74.248.20.108
+Environment=CLASS_URL=https://74-248-20-108.sslip.io
+Environment=IDE_PUBLIC_URL=https://74-248-20-108.sslip.io
+Environment=HELPER_GATEWAY=0
+Environment=DESK=0
+Environment=HELPDESK_URL=http://127.0.0.1:8795
+Environment=HELPDESK_SECRET_FILE=/var/lib/teachforth-helper/internal-secret
 ExecStart=/usr/bin/node /opt/teachforth-discord/discord-bot.js
 Restart=on-failure
 RestartSec=3
