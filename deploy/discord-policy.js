@@ -2,35 +2,42 @@ import { createPublicKey, verify } from "node:crypto";
 
 const SPKI = Buffer.from("302a300506032b6570032100", "hex");
 
+export const COLOR = 0x7a1fa3;
+
 export const COMMANDS = [
-  { name: "help", description: "Show TeachForth Helper commands" },
-  { name: "ping", description: "Check that the helper is online" },
-  { name: "status", description: "See if the class server is on" },
+  { name: "help", description: "What you can do here" },
+  { name: "class", description: "See if class is on, and open the IDE" },
   {
     name: "link",
-    description: "Link this Discord account to TeachForth",
+    description: "Connect this Discord account to TeachForth",
     options: [{ name: "code", description: "Code from the IDE account menu", type: 3, required: true }],
   },
-  { name: "unlink", description: "Unlink this Discord account" },
-  { name: "whoami", description: "Show the linked TeachForth account" },
-  { name: "github", description: "See whether GitHub is connected" },
-  { name: "projects", description: "List your projects. No code is posted." },
+  { name: "unlink", description: "Disconnect this Discord account" },
+  { name: "me", description: "Your TeachForth account" },
+  { name: "projects", description: "Open one of your projects" },
   {
     name: "share",
-    description: "Post a sign-in link for one project. No code is posted.",
-    options: [{ name: "name", description: "Project title", type: 3, required: true }],
+    description: "Share a project in this channel",
+    options: [{ name: "name", description: "Project name", type: 3, required: true }],
   },
-  { name: "live", description: "Who is paired in a live session" },
+  { name: "live", description: "See who is paired right now" },
   {
-    name: "lookup",
-    description: "Find a person you are allowed to open",
+    name: "find",
+    description: "Find a student or teacher you can open",
     options: [{ name: "name", description: "Name", type: 3, required: true }],
   },
-  { name: "chapters", description: "List chapters" },
-  { name: "usage", description: "Today's class server counts" },
+  {
+    name: "home",
+    description: "Send a student a private link to keep working",
+    options: [
+      { name: "student", description: "Student name", type: 3, required: true },
+      { name: "project", description: "Project name", type: 3, required: true },
+      { name: "hours", description: "How many hours the link lasts", type: 4, required: true },
+    ],
+  },
   {
     name: "power",
-    description: "Start or stop the class server",
+    description: "Start or stop class",
     options: [
       {
         name: "action",
@@ -48,7 +55,7 @@ export const COMMANDS = [
   },
   {
     name: "logins",
-    description: "Choose where sign-ins are posted",
+    description: "Choose where sign-ins show up",
     options: [
       {
         name: "action",
@@ -65,10 +72,10 @@ export const COMMANDS = [
   },
 ];
 
-const OPEN = new Set(["help", "ping", "status", "link"]);
-const LINKED = new Set(["unlink", "whoami", "github", "projects", "share"]);
-const STAFF = new Set(["live", "lookup", "chapters"]);
-const ADMIN = new Set(["power", "logins", "usage"]);
+const OPEN = new Set(["help", "class", "link", "ping", "status"]);
+const LINKED = new Set(["unlink", "me", "whoami", "github", "projects", "share"]);
+const STAFF = new Set(["live", "find", "lookup", "home"]);
+const ADMIN = new Set(["power", "logins"]);
 
 export function commandAllowed(name, role) {
   if (OPEN.has(name)) return true;
@@ -81,19 +88,75 @@ export function commandAllowed(name, role) {
 
 export function helpText(role) {
   const lines = [
-    "TeachForth Helper",
-    "/link code — use the code from the IDE account menu",
-    "/status — is the class server on",
-    "/ping — is this bot on",
-    "/help — this list",
+    "Ask if class is on with /class, open your work with /projects, or share a project in the channel with /share.",
+    "Connect this account first: grab a code from the IDE account menu, then /link.",
   ];
-  if (role) {
-    lines.push("/whoami — linked account", "/unlink — remove the link", "/github — GitHub connection", "/projects — your project titles", "/share name — post a sign-in link, not code");
+  if (role && role !== "student") lines.push("You can see who's live, find a student, and send someone a private home link.");
+  if (role === "admin") lines.push("You can start class with /power, and pick a sign-in channel with /logins.");
+  return lines.join(" ");
+}
+
+export function roleLabel(role) {
+  return {
+    admin: "Admin",
+    chapter_lead: "Chapter lead",
+    lead_teacher: "Session lead",
+    teacher: "Teacher",
+    student: "Student",
+  }[role] || "TeachForth";
+}
+
+export function languageLabel(language) {
+  if (language === "python") return "Python";
+  if (language === "web") return "Web";
+  return "Project";
+}
+
+export function card({ title, description, fields, footer, url, timestamp }) {
+  const embed = { color: COLOR };
+  if (title) embed.title = plain(title, 200);
+  if (description) embed.description = String(description).slice(0, 1800);
+  if (url && safeUrl(url)) embed.url = url;
+  if (fields?.length) {
+    embed.fields = fields.slice(0, 12).map((field) => ({
+      name: plain(field.name, 80) || "Note",
+      value: String(field.value || "—").slice(0, 200),
+      inline: Boolean(field.inline),
+    }));
   }
-  if (role && role !== "student") lines.push("/live — current pairs", "/lookup name — a person you can open", "/chapters — chapter names");
-  if (role === "admin") lines.push("/power action minutes — start, stop, or extend", "/logins here — post sign-ins in this channel", "/usage — today's counts");
-  lines.push("Commands never post code, passwords, or tokens.");
-  return lines.join("\n");
+  if (footer) embed.footer = { text: plain(footer, 80) };
+  if (timestamp) embed.timestamp = timestamp;
+  return embed;
+}
+
+export function buttons(links) {
+  const components = [];
+  for (const link of links || []) {
+    const url = String(link?.url || "");
+    if (!safeUrl(url)) continue;
+    components.push({ type: 2, style: 5, label: plain(link.label, 40) || "Open", url });
+    if (components.length === 5) break;
+  }
+  return components.length ? [{ type: 1, components }] : [];
+}
+
+export function safeUrl(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    return parsed.protocol === "https:" && !parsed.username && !parsed.password && String(url).length <= 500;
+  } catch {
+    return false;
+  }
+}
+
+export function messageData(message) {
+  const item = typeof message === "string" ? { embeds: [card({ description: message })] } : message || {};
+  const data = {};
+  if (item.content) data.content = String(item.content).slice(0, 1800);
+  if (item.embeds?.length) data.embeds = item.embeds.slice(0, 4);
+  if (item.components?.length) data.components = item.components.slice(0, 5);
+  if (item.ephemeral !== false) data.flags = 64;
+  return data;
 }
 
 export function optionValue(data, name) {
@@ -116,12 +179,14 @@ export function plain(value, max = 80) {
 }
 
 export function shareCard({ title, language, owner, url }) {
-  return [
-    plain(title, 80),
-    `${plain(language, 24) || "project"} · ${plain(owner, 40)}`,
-    String(url),
-    "Sign in with your TeachForth account. This link does not skip login.",
-  ].join("\n");
+  const who = plain(owner, 40);
+  const kind = languageLabel(language);
+  return card({
+    title,
+    url,
+    description: who ? `${who} · ${kind}. Sign in to open it.` : `${kind}. Sign in to open it.`,
+    footer: "TeachForth",
+  });
 }
 
 export function discordKey(hex) {

@@ -9,7 +9,7 @@ import { request as httpRequest } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { normalizeDomain } from "./domains.js";
-import { commandAllowed, helpText, shareCard, verifyDiscord } from "../deploy/discord-policy.js";
+import { buttons, commandAllowed, helpText, messageData, shareCard, verifyDiscord } from "../deploy/discord-policy.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -543,9 +543,11 @@ try {
   const cleared = await send("/api/domains", { method: "DELETE", cookie: admin.cookie, body: { domain: "ide.school.edu" } });
   assert(cleared.domains.length === 0 && readFileSync(join(dir, "domains.txt"), "utf8") === "", "removing a domain clears the helper list");
 
-  assert(commandAllowed("power", "admin") && !commandAllowed("power", "teacher") && !commandAllowed("live", "student") && commandAllowed("share", "student"), "discord command roles");
+  assert(commandAllowed("power", "admin") && !commandAllowed("power", "teacher") && !commandAllowed("live", "student") && commandAllowed("share", "student") && !commandAllowed("home", "student") && commandAllowed("home", "teacher"), "discord command roles");
   assert(!helpText("student").includes("/power") && helpText("admin").includes("/logins"), "discord help follows the role");
-  assert(!shareCard({ title: "Cards", language: "web", owner: "Sam", url: "https://74.248.20.108/#/project/1" }).includes("password"), "share card has no secrets");
+  const sharedCard = shareCard({ title: "Cards", language: "web", owner: "Sam", url: "https://74.248.20.108/#/project/1" });
+  assert(sharedCard.title === "Cards" && !JSON.stringify(sharedCard).includes("password") && !JSON.stringify(sharedCard).includes("token"), "share card has no secrets");
+  assert(buttons([{ label: "Open", url: "javascript:alert(1)" }]).length === 0 && messageData({ embeds: [sharedCard] }).flags === 64, "discord buttons stay https and replies stay private");
   const keys = generateKeyPairSync("ed25519");
   const publicHex = keys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
   const signedBody = JSON.stringify({ type: 1 });
@@ -587,6 +589,19 @@ try {
     body: JSON.stringify({ code: "ABCD;rm", discordId: "323456789012345678", discordName: "Nope" }),
   });
   assert(badCode.status === 400, "discord rejects a bad code");
+  const discordHome = await fetch(`${base}/api/discord/home?discordId=223456789012345678`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ student: "Sam", project: "Cards", hours: 2 }),
+  });
+  const discordHomeBody = await discordHome.json();
+  assert(discordHome.status === 403 && !JSON.stringify(discordHomeBody).includes("github_token") && !JSON.stringify(discordHomeBody).includes("password"), "students cannot make home links from discord");
+  const discordHours = await fetch(`${base}/api/discord/home?discordId=123456789012345678`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ student: "Stu", project: "Cards", hours: 0 }),
+  });
+  assert(discordHours.status === 400, "home hours are bounded");
   const setupView = await send("/api/discord/setup", { cookie: admin.cookie });
   assert(setupView.reachable === false && setupView.guildId === "", "discord setup stays blank when the helper is off");
   const studentSetup = await send("/api/discord/setup", { method: "POST", cookie: student.cookie, body: { guildId: "123456789012345678" }, ok: false });

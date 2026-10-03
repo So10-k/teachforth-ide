@@ -2,6 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { canAccessProject, canSeeStudent, canViewProfile, isStaff } from "./org.js";
+import { isLeadPlus } from "./controls.js";
+import { createHomeLink } from "./homework.js";
 import { pace } from "./github.js";
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -23,6 +25,8 @@ export function discordRoute(ctx, path) {
   if (path === "/api/discord/me" && req.method === "DELETE") return unlinkMe(ctx);
   if (path === "/api/discord/code" && req.method === "POST") return makeCode(ctx);
   if (path === "/api/discord/setup" && (req.method === "GET" || req.method === "POST")) return guildSetup(ctx);
+  if (path === "/api/discord/class" && req.method === "GET") return classNow(ctx);
+  if (path === "/api/discord/home" && req.method === "POST") return homeLink(ctx);
   return false;
 }
 
@@ -148,17 +152,91 @@ async function botUnlink(ctx) {
 
 function profile(ctx) {
   const user = linkedUser(ctx);
+  const count = ctx.db.prepare("SELECT COUNT(*) AS n FROM projects WHERE owner_id = ?").get(user.id);
   ctx.send(ctx.res, 200, {
+    id: user.id,
     name: user.name,
     role: user.role,
     githubLinked: Boolean(user.github_token),
     githubLogin: user.github_token ? user.github_login || "" : "",
+    projectCount: count?.n || 0,
+  });
+}
+
+function classNow(ctx) {
+  const user = linkedUser(ctx);
+  const pair = ctx.db.prepare(
+    `SELECT b.name AS block, t.name AS teacher, s.name AS student, s.id AS student_id
+     FROM pairs p
+     JOIN blocks b ON b.id = p.block_id
+     JOIN users t ON t.id = p.teacher_id
+     JOIN users s ON s.id = p.student_id
+     WHERE b.status = 'live' AND (p.student_id = ? OR p.teacher_id = ?)
+     LIMIT 1`,
+  ).get(user.id, user.id);
+  ctx.send(ctx.res, 200, {
+    name: user.name,
+    role: user.role,
+    pair: pair ? { block: pair.block, teacher: pair.teacher, student: pair.student, studentId: pair.student_id } : null,
+    pairs: isStaff(user) ? livePairs(ctx, user) : [],
+  });
+}
+
+async function homeLink(ctx) {
+  const user = linkedUser(ctx);
+  if (user.role === "student") ctx.fail(403, "Only a session lead can send someone home");
+  if (!pace(`discord-home:${user.id}`, 3, 10 * 60_000)) ctx.fail(429, "Wait a few minutes before making another home link.");
+  const body = await ctx.readJson(ctx.req);
+  const studentQuery = safeLike(body.student);
+  const projectQuery = safeLike(body.project);
+  const hours = Number(body.hours);
+  if (studentQuery.length < 2 || projectQuery.length < 2) ctx.fail(400, "Type at least 2 letters of the student and the project");
+  if (!Number.isInteger(hours) || hours < 1 || hours > 168) ctx.fail(400, "Tell me a length between 1 and 168 hours");
+  const students = ctx.db.prepare(
+    "SELECT id, name, role, discord_id FROM users WHERE role = 'student' AND lower(name) LIKE ? ORDER BY name LIMIT 8",
+  ).all(`%${studentQuery}%`).filter((row) => isLeadPlus(ctx.db, user, row.id));
+  if (!students.length) ctx.fail(404, "No student in your live block matches that");
+  if (students.length > 1) {
+    ctx.send(ctx.res, 200, { choices: students.map((row) => row.name) });
+    return;
+  }
+  const student = students[0];
+  const projects = ctx.db.prepare(
+    `SELECT p.*, u.name AS owner_name, u.role AS owner_role
+     FROM projects p JOIN users u ON u.id = p.owner_id
+     WHERE p.owner_id = ? AND lower(p.title) LIKE ?
+     ORDER BY p.updated_at DESC LIMIT 8`,
+  ).all(student.id, `%${projectQuery}%`);
+  if (!projects.length) ctx.fail(404, "That student doesn't have a project by that name");
+  if (projects.length > 1) {
+    ctx.send(ctx.res, 200, { choices: projects.map((row) => row.title), student: student.name });
+    return;
+  }
+  const project = projects[0];
+  const files = ctx.db.prepare("SELECT path, content FROM files WHERE project_id = ?").all(project.id);
+  let result;
+  try {
+    result = await createHomeLink(ctx.db, user, project, files, hours);
+  } catch (err) {
+    ctx.fail(err.status || 502, err.publicMessage || "The home link did not start");
+  }
+  ctx.audit(user, "discord.home", project.id, result.expiresAt);
+  ctx.send(ctx.res, 200, {
+    url: result.url,
+    expiresAt: result.expiresAt,
+    title: project.title,
+    student: student.name,
+    discordId: snowflake(student.discord_id),
   });
 }
 
 function live(ctx) {
   const user = linkedUser(ctx);
   if (!isStaff(user)) ctx.fail(403, "You cannot do that");
+  ctx.send(ctx.res, 200, { pairs: livePairs(ctx, user) });
+}
+
+function livePairs(ctx, user) {
   const rows = ctx.db.prepare(
     `SELECT b.name AS block, t.name AS teacher, s.name AS student, s.id AS student_id
      FROM pairs p
@@ -168,9 +246,12 @@ function live(ctx) {
      WHERE b.status = 'live'
      ORDER BY b.name, s.name`,
   ).all().filter((row) => user.role === "admin" || canSeeStudent(ctx.db, user, row.student_id));
-  ctx.send(ctx.res, 200, {
-    pairs: rows.slice(0, 30).map((row) => ({ block: row.block, teacher: row.teacher, student: row.student })),
-  });
+  return rows.slice(0, 8).map((row) => ({
+    block: row.block,
+    teacher: row.teacher,
+    student: row.student,
+    studentId: row.student_id,
+  }));
 }
 
 function lookup(ctx) {
@@ -179,20 +260,28 @@ function lookup(ctx) {
   const q = safeLike(ctx.url?.searchParams.get("q") || "");
   if (q.length < 2) ctx.fail(400, "Type at least 2 letters");
   const rows = ctx.db.prepare(
-    `SELECT id, name, email, role FROM users
+    `SELECT id, name, email, role, github_login, github_token FROM users
      WHERE lower(name) LIKE ? OR lower(email) LIKE ?
      ORDER BY name LIMIT 20`,
   ).all(`%${q}%`, `%${q}%`);
-  const people = rows.filter((row) => canOpenPerson(ctx.db, user, row)).slice(0, 5);
+  const people = rows.filter((row) => canOpenPerson(ctx.db, user, row)).slice(0, 5).map((row) => ({
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    role: row.role,
+    githubLogin: row.github_token ? row.github_login || "" : "",
+  }));
   ctx.send(ctx.res, 200, { people });
 }
 
 function projects(ctx) {
   const user = linkedUser(ctx);
   const rows = ctx.db.prepare(
-    "SELECT id, title, language FROM projects WHERE owner_id = ? ORDER BY updated_at DESC LIMIT 8",
+    "SELECT id, title, language, updated_at FROM projects WHERE owner_id = ? ORDER BY updated_at DESC LIMIT 5",
   ).all(user.id);
-  ctx.send(ctx.res, 200, { projects: rows });
+  ctx.send(ctx.res, 200, {
+    projects: rows.map((row) => ({ id: row.id, title: row.title, language: row.language, updatedAt: row.updated_at })),
+  });
 }
 
 function share(ctx) {

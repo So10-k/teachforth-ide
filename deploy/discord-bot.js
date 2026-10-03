@@ -6,10 +6,15 @@ import {
   COMMANDS,
   actorId,
   actorName,
+  buttons,
+  card,
   commandAllowed,
   helpText,
+  languageLabel,
+  messageData,
   optionValue,
   plain,
+  roleLabel,
   shareCard,
   verifyDiscord,
 } from "./discord-policy.js";
@@ -63,163 +68,244 @@ async function interaction(req, res) {
   const payload = commandPayload(body);
   json(res, 200, payload.reply);
   if (payload.after) {
-    const content = await payload.after();
-    await followup(body.token, String(content).slice(0, 1800));
+    const message = await payload.after();
+    await followup(body.token, message);
   }
 }
 
 function commandPayload(body) {
   const config = loadConfig();
   if (body.type === 1) return { reply: { type: 1 } };
-  if (body.type !== 2) return { reply: { type: 4, data: { content: "That is not a command I know.", flags: 64 } } };
+  if (body.type !== 2) return now(say("I don't know that one", "Try /class or /help."));
   if (config.guildId && body.guild_id !== config.guildId) {
-    return { reply: { type: 4, data: { content: "Use this in the TeachForth server.", flags: 64 } } };
+    return now(say("Wrong server", "Use me in the TeachForth Discord."));
   }
   const name = body.data?.name || "";
   const id = actorId(body);
-  if (!id || !pace(`cmd:${id}`, 8, 60_000)) {
-    return { reply: { type: 4, data: { content: "Wait a minute and try again.", flags: 64 } } };
-  }
-  if (name === "ping") return { reply: { type: 4, data: { content: "TeachForth Helper is on.", flags: 64 } } };
-  if (name === "help") return { reply: { type: 4, data: { content: helpText(cachedRole(id)), flags: 64 } } };
+  if (!id || !pace(`cmd:${id}`, 8, 60_000)) return now(say("Slow down", "Give it a minute, then try again."));
+  if (name === "help") return now(helpMessage(cachedRole(id)));
   return {
     reply: { type: 5, data: { flags: 64 } },
-    after: () => run(name, body, id).catch(() => "Something went wrong."),
+    after: () => run(name, body, id).catch(() => say("That got stuck", "Try again in a minute.")),
   };
 }
 
 async function run(name, body, id) {
-  if (name === "status") return statusText(await power("GET", "/api/internal/status"));
-  if (name === "link") return link(id, actorName(body), optionValue(body.data, "code"));
-  const local = name === "power" || name === "logins";
-  const role = local ? adminRole(id) : await liveRole(id);
-  if (!local && role.off) return "The class server is off.";
-  const current = local ? role : role.role;
-  if (!commandAllowed(name, current)) {
-    if (local) return "Only a linked admin can do that. Link once while the class server is on.";
-    return current ? "You cannot do that." : "Link Discord first. Open the IDE, use the account menu, then /link.";
+  const command = { status: "class", ping: "class", whoami: "me", github: "me", lookup: "find" }[name] || name;
+  if (command === "class") {
+    const status = await power("GET", "/api/internal/status");
+    const phase = status.data?.phase;
+    const context = !status.ok || phase === "off" ? null : await classContext(id);
+    return classCard(status, context);
   }
-  if (name === "unlink") return unlink(id);
-  if (name === "whoami") return whoami(id);
-  if (name === "github") return github(id);
-  if (name === "projects") return projectList(id);
-  if (name === "share") return share(id, body, optionValue(body.data, "name"));
-  if (name === "live") return liveText(id);
-  if (name === "lookup") return lookupText(id, optionValue(body.data, "name"));
-  if (name === "chapters") return chapterText(id);
-  if (name === "usage") return usageText(id);
-  if (name === "power") return powerCommand(id, actorName(body), optionValue(body.data, "action"), optionValue(body.data, "minutes"));
-  if (name === "logins") return logins(optionValue(body.data, "action"), body.channel_id);
-  return "That is not a command I know.";
+  if (command === "link") return link(id, actorName(body), optionValue(body.data, "code"));
+  if (name === "chapters" || name === "usage") return say("That one's gone", "Try /class, /find, or /projects.");
+  const local = command === "power" || command === "logins";
+  const role = local ? { role: adminRole(id), off: false } : await liveRole(id);
+  if (!local && role.off && command !== "power") {
+    return say("Class is off", "I can still tell you if class is on with /class. Projects and people show up once it's running.");
+  }
+  const current = role.role;
+  if (!commandAllowed(command, current)) {
+    if (local) return say("Link an admin first", "Link once while class is on. After that, you can start it from here even when it's off.");
+    return current ? say("That's not yours", "You can only open people and projects you're allowed to see.") : say("Link your account", "Open the IDE, grab a code from the account menu, then use /link.");
+  }
+  if (command === "unlink") return unlink(id);
+  if (command === "me") return meCard(id);
+  if (command === "projects") return projectList(id);
+  if (command === "share") return share(id, body, optionValue(body.data, "name"));
+  if (command === "live") return liveText(id);
+  if (command === "find") return findText(id, optionValue(body.data, "name"));
+  if (command === "home") return homeLink(id, optionValue(body.data, "student"), optionValue(body.data, "project"), optionValue(body.data, "hours"));
+  if (command === "power") return powerCommand(id, actorName(body), optionValue(body.data, "action"), optionValue(body.data, "minutes"));
+  if (command === "logins") return logins(optionValue(body.data, "action"), body.channel_id);
+  return say("I don't know that one", "Try /class or /help.");
 }
 
 async function link(id, name, code) {
-  if (!pace(`link:${id}`, 5, 10 * 60_000)) return "Wait a few minutes before trying another code.";
+  if (!pace(`link:${id}`, 5, 10 * 60_000)) return say("Slow down", "Wait a few minutes before trying another code.");
   const result = await classSend("POST", "/api/discord/claim", { code, discordId: id, discordName: name });
-  if (result.status === 0) return "The class server is off. An admin can start it from the power panel, or with /power after they have linked once.";
-  if (result.status !== 200) return plain(result.data.error || "That code did not work.", 180);
+  if (result.status === 0) return say("Class is off", "I can't link anyone until class is running. An admin can start it with /power.");
+  if (result.status !== 200) return say("That code didn't work", "Make a new one from the account menu in the IDE. Codes last 10 minutes.");
   remember(id, result.data.role);
-  return `Linked as ${plain(result.data.name, 80)} (${plain(result.data.role, 20).replaceAll("_", " ")}).`;
+  const role = result.data.role;
+  return say(`You're in, ${plain(result.data.name, 60)}`, role === "student"
+    ? "This Discord account is your student login. Connect GitHub in the IDE if you haven't yet."
+    : `You're linked as a ${roleLabel(role).toLowerCase()}. You can find students and see who's live from here.`, [
+    { label: "Open IDE", url: IDE_URL },
+  ]);
 }
 
 async function unlink(id) {
   const result = await classSend("POST", "/api/discord/unlink", { discordId: id });
-  if (result.status === 0) return "The class server is off, so the link could not be removed.";
+  if (result.status === 0) return say("Class is off", "I can't remove the link until class is running.");
   forget(id);
-  return "Discord is unlinked.";
+  return say("Unlinked", "This Discord account isn't connected to TeachForth anymore.");
 }
 
-async function whoami(id) {
+async function meCard(id) {
   const result = await classGet(`/api/discord/profile?discordId=${id}`);
-  if (result.status !== 200) return classError(result);
+  if (result.status !== 200) return fromApi(result);
   remember(id, result.data.role);
-  return `${plain(result.data.name, 80)} · ${plain(result.data.role, 20).replaceAll("_", " ")}`;
-}
-
-async function github(id) {
-  const result = await classGet(`/api/discord/profile?discordId=${id}`);
-  if (result.status !== 200) return classError(result);
-  remember(id, result.data.role);
-  return result.data.githubLinked ? `GitHub is connected as @${plain(result.data.githubLogin, 40)}.` : "GitHub is not connected. Connect it from the IDE before saving a project.";
+  const row = result.data;
+  const github = row.githubLinked ? `GitHub @${plain(row.githubLogin, 32)}` : "GitHub isn't connected yet";
+  const count = Number(row.projectCount || 0);
+  return say(row.name, `${roleLabel(row.role)}. ${github}.`, [
+    { label: "Open IDE", url: IDE_URL },
+    { label: "My page", url: personUrl(row.id) },
+  ], [{ name: "Projects", value: count ? `${count} saved` : "None yet", inline: true }]);
 }
 
 async function projectList(id) {
   const result = await classGet(`/api/discord/projects?discordId=${id}`);
-  if (result.status !== 200) return classError(result);
+  if (result.status !== 200) return fromApi(result);
   const rows = result.data.projects || [];
-  if (!rows.length) return "No projects yet.";
-  return rows.map((project) => `${plain(project.title, 60)} · ${plain(project.language, 16)}`).join("\n");
+  if (!rows.length) return say("No projects yet", "Start one in the IDE. It'll show up here once it has a name.", [{ label: "Open IDE", url: IDE_URL }]);
+  return {
+    embeds: [card({
+      title: "Your projects",
+      description: "The last few you touched. Open one.",
+      fields: rows.slice(0, 5).map((project) => ({
+        name: project.title,
+        value: `${languageLabel(project.language)} · ${ago(project.updatedAt)}`,
+        inline: true,
+      })),
+      footer: "TeachForth",
+    })],
+    components: buttons(rows.slice(0, 5).map((project) => ({ label: project.title, url: projectUrl(project.id) }))),
+    ephemeral: true,
+  };
 }
 
 async function share(id, body, name) {
   const result = await classGet(`/api/discord/share?discordId=${id}&name=${encodeURIComponent(String(name || ""))}`);
-  if (result.status !== 200) return classError(result);
+  if (result.status !== 200) return fromApi(result, "No project by that name");
   const matches = result.data.matches || [];
-  if (!matches.length) return "No project you can open matches that.";
-  if (matches.length > 1) return `More than one match:\n${matches.map((project) => plain(project.title, 60)).join("\n")}`;
+  if (!matches.length) return say("Nothing matched", "Try a longer piece of the project name.");
+  if (matches.length > 1) {
+    return {
+      embeds: [card({
+        title: "Which project?",
+        description: "A few match. Open one, or use the full name and I'll post it here.",
+        footer: "TeachForth",
+      })],
+      components: buttons(matches.slice(0, 5).map((project) => ({ label: project.title, url: projectUrl(project.id) }))),
+      ephemeral: true,
+    };
+  }
   const project = matches[0];
-  const url = `${IDE_URL}/#/project/${Number(project.id)}`;
+  const url = projectUrl(project.id);
+  const row = buttons([{ label: "Open project", url }]);
   const posted = await discord(`channels/${body.channel_id}/messages`, {
-    content: shareCard({ title: project.title, language: project.language, owner: project.owner, url }),
+    embeds: [shareCard({ title: project.title, language: project.language, owner: project.owner, url })],
+    ...(row.length ? { components: row } : {}),
   });
-  if (!posted.ok) return "I could not post in this channel.";
-  return `Posted a sign-in link for ${plain(project.title, 60)}. No code was included.`;
+  if (!posted.ok) return say("I can't post here", "I need permission to send messages in this channel.");
+  return say("Shared", `${plain(project.title, 60)} is in the channel. People still have to sign in.`);
 }
 
 async function liveText(id) {
   const result = await classGet(`/api/discord/live?discordId=${id}`);
-  if (result.status !== 200) return classError(result);
+  if (result.status !== 200) return fromApi(result);
   const pairs = result.data.pairs || [];
-  if (!pairs.length) return "Nothing is live.";
-  return pairs.map((pair) => `${plain(pair.block, 40)}: ${plain(pair.teacher, 40)} with ${plain(pair.student, 40)}`).join("\n");
+  if (!pairs.length) return say("Nobody's live", "When a block starts, the pairs show up here.", [{ label: "Open IDE", url: IDE_URL }]);
+  return {
+    embeds: [card({
+      title: "Live right now",
+      description: pairs.length === 1 ? `${plain(pairs[0].teacher, 40)} is with ${plain(pairs[0].student, 40)}.` : "These blocks are going.",
+      fields: pairs.slice(0, 8).map((pair) => ({ name: pair.block || "Block", value: `${plain(pair.teacher, 40)} with ${plain(pair.student, 40)}` })),
+      footer: "TeachForth",
+    })],
+    components: buttons(pairs.slice(0, 5).map((pair) => ({ label: pair.student, url: personUrl(pair.studentId) }))),
+    ephemeral: true,
+  };
 }
 
-async function lookupText(id, name) {
+async function findText(id, name) {
   const result = await classGet(`/api/discord/lookup?discordId=${id}&q=${encodeURIComponent(String(name || ""))}`);
-  if (result.status !== 200) return classError(result);
+  if (result.status !== 200) return fromApi(result, "Couldn't find them");
   const people = result.data.people || [];
-  if (!people.length) return "No match you can open.";
-  return people.map((person) => `${plain(person.name, 40)} — ${plain(person.role, 20).replaceAll("_", " ")}\n${plain(person.email, 80)}`).join("\n");
+  if (!people.length) return say("Couldn't find them", "No one by that name that you can open.");
+  if (people.length === 1) {
+    const person = people[0];
+    const fields = [{ name: "Role", value: roleLabel(person.role), inline: true }];
+    if (person.githubLogin) fields.push({ name: "GitHub", value: `@${plain(person.githubLogin, 32)}`, inline: true });
+    if (person.email) fields.push({ name: "Email", value: plain(person.email, 80) });
+    return say(person.name, "Open their page to see past work.", [{ label: "Open page", url: personUrl(person.id) }], fields);
+  }
+  return {
+    embeds: [card({
+      title: "A few people match",
+      description: "Open the one you meant.",
+      fields: people.slice(0, 5).map((person) => ({ name: person.name, value: roleLabel(person.role), inline: true })),
+      footer: "TeachForth",
+    })],
+    components: buttons(people.slice(0, 5).map((person) => ({ label: person.name, url: personUrl(person.id) }))),
+    ephemeral: true,
+  };
 }
 
-async function chapterText(id) {
-  const result = await classGet(`/api/discord/chapters?discordId=${id}`);
-  if (result.status !== 200) return classError(result);
-  const rows = result.data.chapters || [];
-  if (!rows.length) return "No chapters yet.";
-  return rows.map((chapter) => `${plain(chapter.name, 40)}${chapter.place ? ` · ${plain(chapter.place, 40)}` : ""}`).join("\n");
-}
-
-async function usageText(id) {
-  const result = await classGet(`/api/discord/usage?discordId=${id}`);
-  if (result.status !== 200) return classError(result);
-  const row = result.data;
-  return `${row.day || "No usage yet"}\nRequests ${row.requests || 0}\nSign-ins ${row.logins || 0}\nEditor opens ${row.editorOpens || 0}`;
+async function homeLink(id, student, project, hours) {
+  if (!pace(`home:${id}`, 3, 10 * 60_000)) return say("Slow down", "Wait a few minutes before making another home link.");
+  const span = Number(hours);
+  if (!Number.isInteger(span) || span < 1 || span > 168) return say("How long?", "Tell me a length between 1 and 168 hours.");
+  const result = await classSend("POST", `/api/discord/home?discordId=${id}`, {
+    student: String(student || ""),
+    project: String(project || ""),
+    hours: span,
+  }, 25000);
+  if (result.status !== 200) return fromApi(result, "Couldn't send them home");
+  if (result.data.choices?.length) {
+    return say("Which one?", result.data.choices.map((item) => plain(item, 60)).join("\n"));
+  }
+  const url = String(result.data.url || "");
+  const title = plain(result.data.title, 60);
+  const who = plain(result.data.student, 40);
+  const row = buttons([{ label: "Open your project", url }]);
+  const sent = await dm(result.data.discordId, {
+    embeds: [card({
+      title: "You can work from home",
+      description: `${title || "Your project"} is open until the time below. This link is just for you.`,
+      timestamp: stamp(result.data.expiresAt),
+      footer: "TeachForth",
+    })],
+    ...(row.length ? { components: row } : {}),
+  });
+  if (sent) return say(`Sent to ${who}`, `${title} is open until the time below. I messaged them the link.`, [], [], stamp(result.data.expiresAt));
+  return say(`${who} can work from home`, `I couldn't message them, so send this yourself. Don't put it in a public channel.\n${url}`, [
+    { label: "Open home IDE", url },
+  ], [], stamp(result.data.expiresAt));
 }
 
 async function powerCommand(id, name, action, minutes) {
-  if (!pace(`power:${id}`, 2, 10 * 60_000)) return "Wait a few minutes before changing power again.";
+  if (!pace(`power:${id}`, 2, 10 * 60_000)) return say("Slow down", "Wait a few minutes before changing power again.");
   if (action === "off") {
     const result = await power("POST", "/api/internal/stop", {});
-    if (!result.ok) return "The class server did not stop. Check the power panel.";
-    await note(`${name} turned the class server off.`);
-    return "Stopping the class server.";
+    if (!result.ok) return say("It didn't stop", "Check the power panel.");
+    await note("Class is shutting down", `${plain(name, 40)} turned it off.`);
+    return classCard(result);
   }
   const span = Number(minutes);
-  if (!Number.isInteger(span) || span < 15 || span > 360) return "Add minutes from 15 to 360.";
+  if (!Number.isInteger(span) || span < 15 || span > 360) return say("How long?", "Add a length from 15 to 360 minutes. For example, /power on 90.");
   const path = action === "extend" ? "/api/internal/extend" : "/api/internal/start";
   const result = await power("POST", path, { minutes: span });
-  if (!result.ok) return plain(result.data.error || "The class server did not change. Check the power panel.", 180);
-  await note(`${name} set the class server ${action} for ${span} minutes.`);
-  return statusText(result);
+  if (!result.ok) return say("Class didn't change", plain(result.data.error || "Check the power panel.", 180));
+  await note(action === "extend" ? "Class was extended" : "Class is starting", `${plain(name, 40)} set it for ${span} minutes.`);
+  return classCard(result);
 }
 
 function logins(action, channelId) {
   const config = loadConfig();
-  if (action === "status") return config.loginChannelId ? "Sign-ins are posted in the saved channel." : "Sign-ins are not posted yet. Use /logins here in the channel you want.";
+  if (action === "status") {
+    return config.loginChannelId
+      ? say("Sign-ins are on", "They show up in the saved channel. Names and roles only.")
+      : say("Sign-ins are off", "Use /logins here in the channel you want.");
+  }
   config.loginChannelId = action === "here" && /^\d{17,20}$/.test(String(channelId || "")) ? String(channelId) : "";
   saveConfig(config);
-  return config.loginChannelId ? "Sign-ins will be posted in this channel. Names and roles only." : "Sign-in posts are off.";
+  return config.loginChannelId
+    ? say("Sign-ins will show up here", "Names and roles only. No emails, no code.")
+    : say("Sign-in posts are off", "I won't post them until you pick a channel.");
 }
 
 async function event(req, res) {
@@ -231,7 +317,7 @@ async function event(req, res) {
     const last = loginSeen.get(key) || 0;
     if (Date.now() - last > 5 * 60_000) {
       loginSeen.set(key, Date.now());
-      await note(`${plain(body.name, 80)} signed in as ${plain(body.role, 20).replaceAll("_", " ")}.`);
+      await note(`${plain(body.name, 80)} signed in`, roleLabel(body.role));
     }
   } else if (body.type === "unlink") forget(String(body.discordId || ""));
   else if (body.type === "role") remember(String(body.discordId || ""), body.role);
@@ -254,25 +340,105 @@ function setup(req, res) {
   json(res, 200, { guildId: config.guildId, configured: configured() });
 }
 
-async function note(content) {
+async function note(title, description) {
   const channel = loadConfig().loginChannelId;
   if (!channel) return;
-  await discord(`channels/${channel}/messages`, { content: content.slice(0, 300) });
+  await discord(`channels/${channel}/messages`, {
+    embeds: [card({ title, description, footer: "TeachForth" })],
+  });
 }
 
-function statusText(result) {
-  if (!result.ok) return "Power status is unavailable.";
-  const state = result.data;
-  const when = state.deadline ? String(state.deadline).replace("T", " ").slice(0, 16) + " UTC" : "No timer set.";
-  if (state.phase === "on" || state.running) return `Class server is on.\n${when}`;
-  if (state.phase === "starting") return `Class server is starting.\n${when}`;
-  if (state.phase === "stopping") return "Class server is stopping.";
-  return "Class server is off.";
+async function classContext(id) {
+  if (!cachedRole(id)) return null;
+  const result = await classGet(`/api/discord/class?discordId=${id}`);
+  if (result.status !== 200) return null;
+  remember(id, result.data.role);
+  return result.data;
 }
 
-function classError(result) {
-  if (result.status === 0) return "The class server is off.";
-  return plain(result.data.error || "That did not work.", 180);
+function classCard(result, context) {
+  if (!result?.ok) return say("I can't see class", "The power panel didn't answer. Try again in a minute.");
+  const state = result.data || {};
+  const phase = state.phase || (state.running ? "on" : "off");
+  const when = stamp(state.deadline);
+  let title = "Class is off";
+  let description = "Nothing's running. An admin can start it with /power.";
+  if (phase === "on" || state.running) {
+    title = "Class is on";
+    description = when ? "Jump in whenever. It turns off at the time below." : "Jump in whenever.";
+  } else if (phase === "starting") {
+    title = "Class is starting";
+    description = when ? "Give it a minute. It stays up until the time below." : "Give it a minute.";
+  } else if (phase === "stopping") {
+    title = "Class is shutting down";
+    description = "Finish what you're on. It won't be up much longer.";
+  }
+  const fields = [];
+  if (context?.pair) {
+    const mine = context.role === "student" ? context.pair.teacher : context.pair.student;
+    fields.push({ name: "You're with", value: `${plain(mine, 40)} · ${plain(context.pair.block, 40)}` });
+  }
+  const others = (context?.pairs || []).filter((pair) => pair.studentId !== context?.pair?.studentId).slice(0, 6);
+  if (others.length) {
+    fields.push({
+      name: "Also live",
+      value: others.map((pair) => `${plain(pair.teacher, 24)} with ${plain(pair.student, 24)}`).join("\n"),
+    });
+  }
+  const links = [];
+  if (phase === "on" || phase === "starting" || state.running) links.push({ label: "Open IDE", url: IDE_URL });
+  if (context?.pair && context.role !== "student") links.push({ label: context.pair.student, url: personUrl(context.pair.studentId) });
+  return say(title, description, links, fields, phase === "off" ? "" : when);
+}
+
+function now(message) {
+  return { reply: { type: 4, data: messageData(message) } };
+}
+
+function say(title, description, links = [], fields = [], timestamp = "") {
+  return {
+    embeds: [card({ title, description, fields, footer: "TeachForth", timestamp: timestamp || undefined })],
+    components: buttons(links),
+    ephemeral: true,
+  };
+}
+
+function helpMessage(role) {
+  return say("Here's what I can do", helpText(role), [{ label: "Open IDE", url: IDE_URL }]);
+}
+
+function fromApi(result, title = "That didn't work") {
+  if (result.status === 0) return say("Class is off", "I can't see that until class is running. An admin can start it with /power.");
+  if (result.status === 404 && /not linked/i.test(result.data?.error || "")) {
+    return say("Link your account", "Open the IDE, grab a code from the account menu, then use /link.");
+  }
+  return say(title, plain(result.data?.error || "Try again in a minute.", 180));
+}
+
+function projectUrl(id) {
+  const n = Number(id);
+  return Number.isInteger(n) && n > 0 ? `${IDE_URL}/#/project/${n}` : "";
+}
+
+function personUrl(id) {
+  const n = Number(id);
+  return Number.isInteger(n) && n > 0 ? `${IDE_URL}/#/person/${n}` : "";
+}
+
+function ago(iso) {
+  const then = Date.parse(iso || "");
+  if (!Number.isFinite(then)) return "saved";
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 36) return `${hours} hr ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+function stamp(iso) {
+  const then = Date.parse(iso || "");
+  return Number.isFinite(then) ? new Date(then).toISOString() : "";
 }
 
 async function liveRole(id) {
@@ -316,7 +482,7 @@ async function classGet(path) {
   return classSend("GET", path);
 }
 
-async function classSend(method, path, body) {
+async function classSend(method, path, body, timeout = 4000) {
   const secret = readSecret();
   if (!secret) return { status: 0, data: { error: "The class server is off." } };
   try {
@@ -324,7 +490,7 @@ async function classSend(method, path, body) {
       method,
       headers: { "x-teachforth-discord": secret, ...(body ? { "content-type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(timeout),
     });
     return { status: res.status, data: await res.json().catch(() => ({})) };
   } catch {
@@ -350,23 +516,32 @@ async function power(method, path, body) {
 
 async function discord(path, body) {
   const token = loadConfig().token;
-  if (!token) return { ok: false };
+  if (!token) return { ok: false, data: {} };
   const res = await fetch(`https://discord.com/api/v10/${path}`, {
     method: "POST",
     headers: { authorization: `Bot ${token}`, "content-type": "application/json" },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(8000),
   });
-  return { ok: res.ok, status: res.status };
+  return { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) };
 }
 
-async function followup(token, content) {
+async function dm(userId, payload) {
+  if (!/^\d{17,20}$/.test(String(userId || ""))) return false;
+  const channel = await discord("users/@me/channels", { recipient_id: String(userId) });
+  const channelId = String(channel.data?.id || "");
+  if (!channel.ok || !/^\d{17,20}$/.test(channelId)) return false;
+  const sent = await discord(`channels/${channelId}/messages`, payload);
+  return sent.ok;
+}
+
+async function followup(token, message) {
   const config = loadConfig();
   if (!config.token || !config.applicationId || !token) return;
   await fetch(`https://discord.com/api/v10/webhooks/${config.applicationId}/${token}/messages/@original`, {
     method: "PATCH",
     headers: { authorization: `Bot ${config.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(messageData(message)),
     signal: AbortSignal.timeout(8000),
   }).catch(() => {});
 }
@@ -559,8 +734,8 @@ async function gatewayCommand(body) {
     signal: AbortSignal.timeout(8000),
   });
   if (!res.ok || !payload.after) return;
-  const content = await payload.after();
-  await followup(body.token, String(content).slice(0, 1800));
+  const message = await payload.after();
+  await followup(body.token, message);
 }
 
 function json(res, status, body) {
