@@ -13,6 +13,7 @@ import {
   shareCard,
   verifyDiscord,
 } from "./discord-policy.js";
+import { socketFor } from "./discord-ws.js";
 
 const DATA = process.env.DATA_DIR || "/var/lib/teachforth-discord";
 const HOST = process.env.HOST || "127.0.0.1";
@@ -35,6 +36,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { ok: true, configured: configured() });
     }
+    if (req.method === "GET" && url.pathname === "/setup") return setup(req, res);
     if (req.method === "POST" && url.pathname === "/event") return event(req, res);
     if (req.method === "POST" && url.pathname === "/interactions") return interaction(req, res);
     json(res, 404, { error: "Not found" });
@@ -45,7 +47,8 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`TeachForth Helper on http://${HOST}:${PORT}`);
-  register().catch((err) => console.error("command register failed", err.status || ""));
+  register().catch(() => console.error("command register failed"));
+  connectGateway();
 });
 
 async function interaction(req, res) {
@@ -57,21 +60,32 @@ async function interaction(req, res) {
     return json(res, 401, { error: "Bad signature" });
   }
   const body = JSON.parse(raw);
-  if (body.type === 1) return json(res, 200, { type: 1 });
-  if (body.type !== 2) return json(res, 200, { type: 4, data: { content: "That is not a command I know.", flags: 64 } });
+  const payload = commandPayload(body);
+  json(res, 200, payload.reply);
+  if (payload.after) {
+    const content = await payload.after();
+    await followup(body.token, String(content).slice(0, 1800));
+  }
+}
+
+function commandPayload(body) {
+  const config = loadConfig();
+  if (body.type === 1) return { reply: { type: 1 } };
+  if (body.type !== 2) return { reply: { type: 4, data: { content: "That is not a command I know.", flags: 64 } } };
   if (config.guildId && body.guild_id !== config.guildId) {
-    return json(res, 200, { type: 4, data: { content: "Use this in the TeachForth server.", flags: 64 } });
+    return { reply: { type: 4, data: { content: "Use this in the TeachForth server.", flags: 64 } } };
   }
   const name = body.data?.name || "";
   const id = actorId(body);
   if (!id || !pace(`cmd:${id}`, 8, 60_000)) {
-    return json(res, 200, { type: 4, data: { content: "Wait a minute and try again.", flags: 64 } });
+    return { reply: { type: 4, data: { content: "Wait a minute and try again.", flags: 64 } } };
   }
-  if (name === "ping") return json(res, 200, { type: 4, data: { content: "TeachForth Helper is on.", flags: 64 } });
-  if (name === "help") return json(res, 200, { type: 4, data: { content: helpText(cachedRole(id)), flags: 64 } });
-  json(res, 200, { type: 5, data: { flags: 64 } });
-  const content = await run(name, body, id).catch(() => "Something went wrong.");
-  await followup(body.token, content.slice(0, 1800));
+  if (name === "ping") return { reply: { type: 4, data: { content: "TeachForth Helper is on.", flags: 64 } } };
+  if (name === "help") return { reply: { type: 4, data: { content: helpText(cachedRole(id)), flags: 64 } } };
+  return {
+    reply: { type: 5, data: { flags: 64 } },
+    after: () => run(name, body, id).catch(() => "Something went wrong."),
+  };
 }
 
 async function run(name, body, id) {
@@ -221,7 +235,23 @@ async function event(req, res) {
     }
   } else if (body.type === "unlink") forget(String(body.discordId || ""));
   else if (body.type === "role") remember(String(body.discordId || ""), body.role);
+  else if (body.type === "guild") {
+    const guildId = String(body.guildId || "").trim();
+    if (guildId && !/^\d{17,20}$/.test(guildId)) return json(res, 400, { error: "That server ID is not valid" });
+    const config = loadConfig();
+    config.guildId = guildId;
+    saveConfig(config);
+    json(res, 200, { ok: true, guildId });
+    register().catch(() => console.error("command register failed"));
+    return;
+  }
   json(res, 200, { ok: true });
+}
+
+function setup(req, res) {
+  if (!sameSecret(String(req.headers["x-teachforth-discord"] || ""))) return json(res, 401, { error: "Sign in first" });
+  const config = loadConfig();
+  json(res, 200, { guildId: config.guildId, configured: configured() });
 }
 
 async function note(content) {
@@ -343,11 +373,21 @@ async function followup(token, content) {
 
 async function register() {
   const config = loadConfig();
-  if (!config.token || !config.applicationId || !config.guildId) return;
-  const res = await fetch(`https://discord.com/api/v10/applications/${config.applicationId}/guilds/${config.guildId}/commands`, {
+  if (!config.token || !config.applicationId) return;
+  if (config.guildId) {
+    await putCommands(`/applications/${config.applicationId}/guilds/${config.guildId}/commands`, COMMANDS);
+    await putCommands(`/applications/${config.applicationId}/commands`, []);
+    return;
+  }
+  await putCommands(`/applications/${config.applicationId}/commands`, COMMANDS);
+}
+
+async function putCommands(path, commands) {
+  const config = loadConfig();
+  const res = await fetch(`https://discord.com/api/v10${path}`, {
     method: "PUT",
     headers: { authorization: `Bot ${config.token}`, "content-type": "application/json" },
-    body: JSON.stringify(COMMANDS),
+    body: JSON.stringify(commands),
     signal: AbortSignal.timeout(8000),
   });
   console.log("commands", res.status);
@@ -423,6 +463,104 @@ function readRaw(req) {
 
 function readJson(req) {
   return readRaw(req).then((raw) => JSON.parse(raw || "{}"));
+}
+
+let gatewayStop = false;
+let gatewayLive = false;
+let gatewayTries = 0;
+let gatewayTimer;
+
+function connectGateway() {
+  const config = loadConfig();
+  if (gatewayStop || gatewayLive || !config.token) return;
+  gatewayLive = true;
+  let ws;
+  try {
+    ws = socketFor("wss://gateway.discord.gg/?v=10&encoding=json");
+  } catch {
+    gatewayLive = false;
+    scheduleGateway();
+    return;
+  }
+  let heartbeat;
+  let firstBeat;
+  let seq = null;
+  const stopBeat = () => {
+    clearTimeout(firstBeat);
+    clearInterval(heartbeat);
+    heartbeat = null;
+  };
+  ws.addEventListener("message", (event) => {
+    let packet;
+    try {
+      packet = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (packet.s != null) seq = packet.s;
+    if (packet.op === 10) {
+      stopBeat();
+      gatewayTries = 0;
+      const beat = () => {
+        if (ws.readyState === 1) ws.send(JSON.stringify({ op: 1, d: seq }));
+      };
+      const wait = Math.max(1000, Math.floor(Number(packet.d?.heartbeat_interval || 45000) * Math.random()));
+      firstBeat = setTimeout(() => {
+        beat();
+        heartbeat = setInterval(beat, Number(packet.d?.heartbeat_interval || 45000));
+      }, wait);
+      ws.send(JSON.stringify({
+        op: 2,
+        d: {
+          token: config.token,
+          intents: 1,
+          properties: { os: "linux", browser: "teachforth", device: "teachforth" },
+        },
+      }));
+    } else if (packet.op === 0 && packet.t === "READY") {
+      console.log("discord gateway ready");
+    } else if (packet.op === 0 && packet.t === "INTERACTION_CREATE") {
+      gatewayCommand(packet.d).catch(() => {});
+    } else if (packet.op === 7 || packet.op === 9) {
+      ws.close();
+    }
+  });
+  ws.addEventListener("close", (event) => {
+    stopBeat();
+    gatewayLive = false;
+    const code = Number(event.code || 0);
+    if (code === 4004 || (code >= 4010 && code <= 4014)) {
+      gatewayStop = true;
+      console.error("discord login failed");
+      return;
+    }
+    gatewayTries += 1;
+    if (gatewayTries > 8) {
+      gatewayStop = true;
+      console.error("discord gateway stopped");
+      return;
+    }
+    scheduleGateway();
+  });
+  ws.addEventListener("error", () => ws.close());
+}
+
+function scheduleGateway() {
+  clearTimeout(gatewayTimer);
+  gatewayTimer = setTimeout(connectGateway, Math.min(60_000, 5000 * Math.max(1, gatewayTries)));
+}
+
+async function gatewayCommand(body) {
+  const payload = commandPayload(body);
+  const res = await fetch(`https://discord.com/api/v10/interactions/${body.id}/${body.token}/callback`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload.reply),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok || !payload.after) return;
+  const content = await payload.after();
+  await followup(body.token, String(content).slice(0, 1800));
 }
 
 function json(res, status, body) {

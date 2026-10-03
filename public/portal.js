@@ -247,7 +247,11 @@ async function profilePage(main, id, me, api, esc, ago) {
 }
 
 async function accountsPage(main, api, esc, powerUrl) {
-  const [{ users }, setup] = await Promise.all([api("/api/users"), api("/api/github/setup")]);
+  const [{ users }, setup, discord] = await Promise.all([
+    api("/api/users"),
+    api("/api/github/setup"),
+    api("/api/discord/setup").catch(() => ({ guildId: "", configured: false, reachable: false })),
+  ]);
   main.innerHTML = page(
     "Accounts",
     "Create people here. Chapters, pairing, and sessions live on their own pages.",
@@ -282,6 +286,10 @@ async function accountsPage(main, api, esc, powerUrl) {
         </section>
         <section class="panel form-card"><h2>Discord</h2>
           <p>Link Discord from the account menu. The helper can start the class server, post sign-ins, and share a project link. It never posts code or passwords.</p>
+          <label>Discord server ID<input id="discord-guild" placeholder="Leave blank until the server is chosen" value="${esc(discord.guildId || "")}" inputmode="numeric" autocomplete="off"></label>
+          <button class="btn" id="save-discord" type="button">Save server ID</button>
+          <p class="muted">${discord.reachable ? "Helper is reachable. Blank means commands are not limited to one server yet." : "Helper is not reachable from this server."}</p>
+          <p class="error" id="discord-err"></p>
         </section>
         <section class="panel form-card"><h2>Authorized domains</h2>
           <p>Extra names that should open this IDE are on the Domains page.</p>
@@ -321,6 +329,17 @@ async function accountsPage(main, api, esc, powerUrl) {
       accountsPage(main, api, esc, powerUrl);
     } catch (err) {
       document.querySelector("#gh-err").textContent = err.message;
+    }
+  };
+  document.querySelector("#save-discord").onclick = async () => {
+    try {
+      await api("/api/discord/setup", {
+        method: "POST",
+        body: { guildId: document.querySelector("#discord-guild").value.trim() },
+      });
+      accountsPage(main, api, esc, powerUrl);
+    } catch (err) {
+      document.querySelector("#discord-err").textContent = err.message;
     }
   };
 }

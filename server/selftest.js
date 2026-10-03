@@ -587,6 +587,14 @@ try {
     body: JSON.stringify({ code: "ABCD;rm", discordId: "323456789012345678", discordName: "Nope" }),
   });
   assert(badCode.status === 400, "discord rejects a bad code");
+  const setupView = await send("/api/discord/setup", { cookie: admin.cookie });
+  assert(setupView.reachable === false && setupView.guildId === "", "discord setup stays blank when the helper is off");
+  const studentSetup = await send("/api/discord/setup", { method: "POST", cookie: student.cookie, body: { guildId: "123456789012345678" }, ok: false });
+  assert(studentSetup.status === 403, "students cannot set the discord server");
+  const badGuild = await send("/api/discord/setup", { method: "POST", cookie: admin.cookie, body: { guildId: "nope" }, ok: false });
+  assert(badGuild.status === 400, "discord server id must be digits");
+  const emptyGuild = await send("/api/discord/setup", { method: "POST", cookie: admin.cookie, body: { guildId: "" }, ok: false });
+  assert(emptyGuild.status === 502, "clearing the discord server still needs the helper");
 
   console.log("selftest ok");
   console.log("outsider blocked", outsider.user.email);

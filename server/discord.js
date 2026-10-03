@@ -22,6 +22,7 @@ export function discordRoute(ctx, path) {
   if (path === "/api/discord/me" && req.method === "GET") return me(ctx);
   if (path === "/api/discord/me" && req.method === "DELETE") return unlinkMe(ctx);
   if (path === "/api/discord/code" && req.method === "POST") return makeCode(ctx);
+  if (path === "/api/discord/setup" && (req.method === "GET" || req.method === "POST")) return guildSetup(ctx);
   return false;
 }
 
@@ -38,6 +39,50 @@ export function notifyDiscord(event) {
     body,
     signal: AbortSignal.timeout(2000),
   }).catch(() => {});
+}
+
+async function guildSetup(ctx) {
+  const { user, requireUser, fail, send } = ctx;
+  requireUser(user);
+  if (user.role !== "admin") fail(403, "Only an admin can do that");
+  if (ctx.req.method === "GET") {
+    const result = await botFetch("GET", "/setup");
+    send(ctx.res, 200, {
+      guildId: /^\d{17,20}$/.test(String(result.data.guildId || "")) ? String(result.data.guildId) : "",
+      configured: Boolean(result.data.configured),
+      reachable: result.ok,
+    });
+    return;
+  }
+  const body = await ctx.readJson(ctx.req);
+  const guildId = String(body.guildId || "").trim();
+  if (guildId && !/^\d{17,20}$/.test(guildId)) fail(400, "That server ID is not valid");
+  const result = await botFetch("POST", "/event", { type: "guild", guildId });
+  if (!result.ok) fail(502, "The helper did not save that. Check that it is running.");
+  ctx.audit(user, "discord.guild", null, guildId);
+  send(ctx.res, 200, { guildId });
+}
+
+async function botFetch(method, path, body) {
+  const secret = readSecret();
+  const base = botBase();
+  if (!secret || !base) return { ok: false, status: 0, data: {} };
+  try {
+    const res = await fetch(`${base}${path}`, {
+      method,
+      headers: { "x-teachforth-discord": secret, ...(body ? { "content-type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(4000),
+    });
+    return { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) };
+  } catch {
+    return { ok: false, status: 0, data: {} };
+  }
+}
+
+function botBase() {
+  const url = process.env.DISCORD_EVENT_URL ?? "https://samsprojects.xyz/teachforth-discord/event";
+  return url ? url.replace(/\/event\/?$/, "") : "";
 }
 
 function makeCode(ctx) {

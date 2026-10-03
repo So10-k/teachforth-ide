@@ -75,7 +75,7 @@ The script that copies is the one on the branch you started the action from, not
 
 ## Discord helper
 
-The bot runs on this VPS, not the class VM. `deploy/install-discord.sh` installs it and creates two secrets under `/var/lib/teachforth-discord`. Copy `secret` to `/var/lib/teachforth-ide/discord-secret` on the class VM, mode 600, owner `teachforth`. Do not copy the bot token or the power secret there. Put the bot token, public key, application id, and server id in `config.json`, then restart `teachforth-discord.service`. The interactions URL is `https://samsprojects.xyz/teachforth-discord/interactions`. Overlay deploy does not update the bot files. Copy `deploy/discord-bot.js` and `deploy/discord-policy.js` to `/opt/teachforth-discord` when those change.
+The bot runs on this VPS, not the class VM. `deploy/install-discord.sh` installs it and creates two secrets under `/var/lib/teachforth-discord`. Copy `secret` to `/var/lib/teachforth-ide/discord-secret` on the class VM, mode 600, owner `teachforth`. Do not copy the bot token or the power secret there. Put the bot token, public key, and application id in `config.json`, then restart `teachforth-discord.service`. Leave the server ID blank there. An admin sets it from Accounts, and that change registers commands again. A blank server ID uses global commands, which can take up to an hour. Overlay deploy does not update the bot files. Copy `deploy/discord-bot.js`, `deploy/discord-policy.js`, and `deploy/discord-ws.js` to `/opt/teachforth-discord` when those change.
 
 ## Authorized domains
 

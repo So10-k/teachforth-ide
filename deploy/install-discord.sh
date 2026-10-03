@@ -5,7 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 id tfdiscord >/dev/null 2>&1 || useradd --system --home /var/lib/teachforth-discord --shell /usr/sbin/nologin tfdiscord
 install -d -o tfdiscord -g tfdiscord -m 750 /var/lib/teachforth-discord
 install -d -o root -g root -m 755 /opt/teachforth-discord
-install -o root -g root -m 644 "$ROOT/deploy/discord-bot.js" "$ROOT/deploy/discord-policy.js" /opt/teachforth-discord/
+install -o root -g root -m 644 "$ROOT/deploy/discord-bot.js" "$ROOT/deploy/discord-policy.js" "$ROOT/deploy/discord-ws.js" /opt/teachforth-discord/
 install -o root -g root -m 644 "$ROOT/deploy/teachforth-discord.service" /etc/systemd/system/teachforth-discord.service
 if [[ ! -f /var/lib/teachforth-discord/secret ]]; then
   umask 077
