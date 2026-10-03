@@ -79,6 +79,7 @@ function section() {
   if (hash.startsWith("#/chapters")) return "chapters";
   if (hash.startsWith("#/students")) return "students";
   if (hash.startsWith("#/accounts") || hash.startsWith("#/studio")) return "accounts";
+  if (hash.startsWith("#/domains")) return "domains";
   if (hash.startsWith("#/sandbox")) return "sandbox";
   if (hash.startsWith("#/center")) return "center";
   if (hash.startsWith("#/roster")) return "roster";
@@ -136,6 +137,7 @@ function shell(active) {
           sideLink(active, "students", "#/students", me.role === "teacher" ? "My students" : "Students"),
           sideLink(active, "people", "#/people", "Directory"),
           me.role === "admin" ? sideLink(active, "accounts", "#/accounts", "Accounts") : "",
+          me.role === "admin" ? sideLink(active, "domains", "#/domains", "Domains") : "",
         ]) : ""}
         ${lead ? sideGroup("Class", [
           sideLink(active, "chapters", "#/chapters", "Chapters"),

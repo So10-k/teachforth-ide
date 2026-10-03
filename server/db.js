@@ -153,6 +153,14 @@ export function openDatabase(file) {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS authorized_domains (
+      domain TEXT PRIMARY KEY,
+      added_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      nginx TEXT NOT NULL DEFAULT 'pending',
+      cert TEXT NOT NULL DEFAULT 'none',
+      detail TEXT NOT NULL DEFAULT ''
+    );
     CREATE TABLE IF NOT EXISTS github_states (
       state TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,

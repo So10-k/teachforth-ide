@@ -73,6 +73,10 @@ Apply copies only the paths you list, and only under `public/` and `server/` on 
 
 The script that copies is the one on the branch you started the action from, not the pull request. A pull request cannot change the copy step or read the key.
 
+## Authorized domains
+
+The class app saves names in `/var/lib/teachforth-ide/domains.txt`. Nginx changes only through the root helper `/usr/local/lib/teachforth/tf-domains`. Overlay deploy does not install that helper. Copy `deploy/tf-domains` to the class VM and run `deploy/install-domains.sh` as root, with the copied script as its argument. That installs the helper, the sudoers line, and certbot if it is missing. It does not replace the default site.
+
 ## If the site breaks
 
 The previous commit is still on GitHub.

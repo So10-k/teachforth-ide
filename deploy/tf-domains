@@ -1,0 +1,186 @@
+#!/bin/bash
+# Root-owned. Reads the domain list and writes only the TeachForth domain vhost.
+# The IDE cannot pass a shell command or a raw nginx snippet.
+set -euo pipefail
+umask 022
+
+LIST="${TF_DOMAINS_LIST:-/var/lib/teachforth-ide/domains.txt}"
+CONF=/etc/nginx/sites-available/teachforth-domains
+LINK=/etc/nginx/sites-enabled/teachforth-domains
+ACME=/var/lib/teachforth-ide/acme
+BACKUP=/var/backups/teachforth-domains
+RENDER=0
+[[ "${1:-}" == "--render" ]] && RENDER=1
+
+if [[ "$RENDER" != 1 && "$(id -u)" != 0 ]]; then
+  echo "helper must run as root" >&2
+  exit 1
+fi
+if [[ "$RENDER" != 1 && -n "${1:-}" ]]; then
+  echo "helper takes no arguments" >&2
+  exit 2
+fi
+
+valid() {
+  local name=$1
+  [[ "$name" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$ ]] || return 1
+  [[ ${#name} -le 253 && "$name" != *..* ]] || return 1
+  [[ "$name" != localhost && "$name" != *.localhost && "$name" != *.local && "$name" != *.internal ]] || return 1
+  return 0
+}
+
+cert_ok() {
+  local domain=$1 cert key realc realk
+  cert="/etc/letsencrypt/live/$domain/fullchain.pem"
+  key="/etc/letsencrypt/live/$domain/privkey.pem"
+  [[ -f "$cert" && -f "$key" ]] || return 1
+  realc=$(readlink -f "$cert")
+  realk=$(readlink -f "$key")
+  [[ "$realc" == /etc/letsencrypt/* && "$realk" == /etc/letsencrypt/* ]] || return 1
+  return 0
+}
+
+domains=()
+if [[ -f "$LIST" && ! -L "$LIST" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line%$'\r'}
+    line=${line%%#*}
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line%"${line##*[![:space:]]}"}
+    line=${line%.}
+    line=${line,,}
+    [[ -z "$line" ]] && continue
+    if ! valid "$line"; then
+      echo "rejected $line" >&2
+      exit 2
+    fi
+    domains+=("$line")
+  done < "$LIST"
+fi
+if (( ${#domains[@]} > 12 )); then
+  echo "too many domains" >&2
+  exit 2
+fi
+
+render_one() {
+  local domain=$1
+  cat <<EOF
+server {
+  listen 80;
+  listen [::]:80;
+  server_name ${domain};
+  client_max_body_size 20m;
+  location ^~ /.well-known/acme-challenge/ {
+    default_type text/plain;
+    alias ${ACME}/.well-known/acme-challenge/;
+  }
+  location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_read_timeout 3600s;
+  }
+}
+EOF
+  if [[ "$RENDER" != 1 ]] && cert_ok "$domain"; then
+    cat <<EOF
+server {
+  listen 443 ssl;
+  listen [::]:443 ssl;
+  server_name ${domain};
+  ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+  client_max_body_size 20m;
+  location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_read_timeout 3600s;
+  }
+}
+EOF
+  fi
+}
+
+rendered=""
+for domain in "${domains[@]+"${domains[@]}"}"; do
+  rendered+=$(render_one "$domain")
+  rendered+=$'\n'
+done
+
+if [[ "$RENDER" == 1 ]]; then
+  printf '%s' "$rendered"
+  exit 0
+fi
+
+if [[ -L "$CONF" || -d "$CONF" ]]; then
+  echo "domain config must be a normal file" >&2
+  exit 1
+fi
+mkdir -p "$BACKUP" "$ACME/.well-known/acme-challenge"
+chmod 755 "$ACME" "$ACME/.well-known" "$ACME/.well-known/acme-challenge"
+[[ -f "$CONF" && ! -L "$CONF" ]] && cp -a "$CONF" "$BACKUP/last.conf"
+restore() {
+  if [[ -f "$BACKUP/last.conf" ]]; then
+    cp -a "$BACKUP/last.conf" "$CONF"
+    ln -sfn "$CONF" "$LINK"
+  else
+    rm -f "$CONF" "$LINK"
+  fi
+  nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+}
+reload_nginx() {
+  if ! systemctl reload nginx; then
+    restore
+    echo "nginx reload failed. The previous domain file was restored." >&2
+    exit 1
+  fi
+}
+if [[ -z "$rendered" ]]; then
+  rm -f "$CONF" "$LINK"
+else
+  printf '%s\n' "$rendered" > "$CONF"
+  ln -sfn "$CONF" "$LINK"
+fi
+if ! nginx -t >"$BACKUP/nginx-test.txt" 2>&1; then
+  restore
+  echo "nginx rejected the domain config. The previous file was restored." >&2
+  exit 1
+fi
+reload_nginx
+
+for domain in "${domains[@]+"${domains[@]}"}"; do
+  cert=none
+  detail=""
+  if cert_ok "$domain"; then
+    cert=issued
+  elif ! command -v certbot >/dev/null 2>&1; then
+    cert=unavailable
+    detail="certbot is not installed. The IDE is still served on HTTP."
+  elif certbot certonly --webroot -w "$ACME" -d "$domain" --non-interactive --agree-tos --register-unsafely-without-email --keep-until-expiring >"$BACKUP/certbot-$domain.log" 2>&1; then
+    cert=issued
+  else
+    cert=pending
+    detail="Certificate is waiting. The A record must point at this server."
+  fi
+  printf '%s\tapplied\t%s\t%s\n' "$domain" "$cert" "$detail"
+done
+
+if [[ -n "$rendered" ]]; then
+  rendered=""
+  for domain in "${domains[@]}"; do
+    rendered+=$(render_one "$domain")
+    rendered+=$'\n'
+  done
+  printf '%s\n' "$rendered" > "$CONF"
+  if ! nginx -t >"$BACKUP/nginx-test.txt" 2>&1; then
+    restore
+    echo "certificate was saved but nginx rejected it. The previous file was restored." >&2
+    exit 1
+  fi
+  reload_nginx
+fi

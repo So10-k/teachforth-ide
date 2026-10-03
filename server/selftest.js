@@ -6,7 +6,8 @@ import { runJava } from "../public/java-lang.js";
 import { publicSlug, siteFiles } from "./publish.js";
 import { mergeText } from "../public/merge.js";
 import { request as httpRequest } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { normalizeDomain } from "./domains.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +26,7 @@ const child = spawn(process.execPath, ["server/index.js"], {
     ADMIN_PASSWORD: "admin-pass-1",
     SEED_DEMO: "1",
     IDLE_STAMP: "",
+    TF_DOMAINS_BIN: "/tmp/teachforth-domains-missing",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -504,6 +506,37 @@ try {
     if (chunk.done) break;
   }
   assert(pyText.includes("Hello from TeachForth"), "python runs in the server sandbox");
+
+  assert(normalizeDomain("IDE.School.edu") === "ide.school.edu", "domain names are lowercase hostnames");
+  assert(!normalizeDomain("ide.school.edu; include /tmp/x") && !normalizeDomain("http://ide.school.edu") && !normalizeDomain("74.248.20.108") && !normalizeDomain("localhost"), "domain names reject schemes, ports, IPs, and injection");
+  const domainList = join(dir, "render-domains.txt");
+  writeFileSync(domainList, "ide.school.edu\n");
+  const rendered = spawnSync("bash", ["deploy/tf-domains", "--render"], {
+    cwd: new URL("..", import.meta.url).pathname,
+    env: { ...process.env, TF_DOMAINS_LIST: domainList },
+    encoding: "utf8",
+  });
+  assert(rendered.status === 0 && rendered.stdout.includes("server_name ide.school.edu;") && rendered.stdout.includes("proxy_pass http://127.0.0.1:8080;"), "domain vhost proxies the IDE");
+  assert(!rendered.stdout.includes("listen 443") && !rendered.stdout.includes("$("), "render does not invent a certificate or a command");
+  const evilList = join(dir, "evil-domains.txt");
+  writeFileSync(evilList, "ide.school.edu; include /etc/nginx/evil.conf\n");
+  const rejected = spawnSync("bash", ["deploy/tf-domains", "--render"], {
+    cwd: new URL("..", import.meta.url).pathname,
+    env: { ...process.env, TF_DOMAINS_LIST: evilList },
+    encoding: "utf8",
+  });
+  assert(rejected.status !== 0 && !String(rejected.stdout).includes("include"), "domain helper rejects injection");
+  const blocked = await send("/api/domains", { method: "POST", cookie: teacher.cookie, body: { domain: "ide.school.edu" }, ok: false });
+  assert(blocked.status === 403, "only an admin can add a domain");
+  const badDomain = await send("/api/domains", { method: "POST", cookie: admin.cookie, body: { domain: "ide.school.edu/admin" }, ok: false });
+  assert(badDomain.status === 400, "a domain cannot include a path");
+  const added = await send("/api/domains", { method: "POST", cookie: admin.cookie, body: { domain: "IDE.School.edu" } });
+  assert(added.domains.length === 1 && added.domains[0].domain === "ide.school.edu" && added.domains[0].nginx === "not-installed", "a domain is saved without nginx");
+  const again = await send("/api/domains", { method: "POST", cookie: admin.cookie, body: { domain: "ide.school.edu" } });
+  assert(again.domains.length === 1, "adding the same domain does not duplicate it");
+  assert(readFileSync(join(dir, "domains.txt"), "utf8") === "ide.school.edu\n", "the helper list is the saved name");
+  const cleared = await send("/api/domains", { method: "DELETE", cookie: admin.cookie, body: { domain: "ide.school.edu" } });
+  assert(cleared.domains.length === 0 && readFileSync(join(dir, "domains.txt"), "utf8") === "", "removing a domain clears the helper list");
 
   console.log("selftest ok");
   console.log("outsider blocked", outsider.user.email);

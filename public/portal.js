@@ -6,6 +6,7 @@ export async function renderPortal({ section, main, me, api, esc, ago, powerUrl 
   if (section === "people") return peoplePage(main, me, api, esc);
   if (section === "person" || section === "student" || section === "folder") return personPage(main, id, me, api, esc, ago);
   if (section === "accounts" || section === "studio") return accountsPage(main, api, esc, powerUrl);
+  if (section === "domains") return domainsPage(main, api, esc);
   if (section === "roster") return pairingPage(main, api, esc);
   if (section === "sandbox") return sandboxPage(main, me, api, esc, ago);
   if (section === "github") return githubPage(main, me, api, esc);
@@ -37,6 +38,7 @@ function homeJumps(me, powerUrl) {
   }
   if (me.role === "admin") {
     items.push(["#/accounts", "Accounts", "Create a login"]);
+    items.push(["#/domains", "Domains", "Serve the IDE on another name"]);
     items.push([powerUrl, "Power panel", "Start or stop the server"]);
   }
   return `<section class="goto"><h2 class="unit">Go to</h2>${jumps(items)}</section>`;
@@ -278,6 +280,10 @@ async function accountsPage(main, api, esc, powerUrl) {
           <p class="muted">${setup.configured ? "GitHub app is ready." : "GitHub is not ready yet."}</p>
           <p class="error" id="gh-err"></p>
         </section>
+        <section class="panel form-card"><h2>Authorized domains</h2>
+          <p>Extra names that should open this IDE are on the Domains page.</p>
+          <a class="btn-ghost" href="#/domains">Open domains</a>
+        </section>
       </div>
     </div>`,
   );
@@ -314,6 +320,70 @@ async function accountsPage(main, api, esc, powerUrl) {
       document.querySelector("#gh-err").textContent = err.message;
     }
   };
+}
+
+async function domainsPage(main, api, esc) {
+  const data = await api("/api/domains");
+  main.innerHTML = page(
+    "Domains",
+    "A name here opens the same IDE. Point its A record at the class server first.",
+    `<section class="panel form-card">
+      <h2>Add a name</h2>
+      <p>A record: <code>${esc(data.address)}</code>. Nginx on the class server serves the IDE for that name. This does not change samsprojects.xyz.</p>
+      <label>Domain<input id="domain-name" placeholder="ide.school.edu" autocomplete="off"></label>
+      <div class="actions">
+        <button class="btn" id="add-domain" type="button">Add</button>
+        <button class="btn-ghost" id="apply-domains" type="button">Apply</button>
+      </div>
+      <p class="error" id="domain-err"></p>
+    </section>
+    <div class="stack" id="domain-list">${domainRows(data.domains, esc)}</div>`,
+  );
+  const refresh = () => domainsPage(main, api, esc);
+  main.querySelector("#add-domain").onclick = async () => {
+    try {
+      await api("/api/domains", { method: "POST", body: { domain: main.querySelector("#domain-name").value } });
+      refresh();
+    } catch (err) {
+      main.querySelector("#domain-err").textContent = err.message;
+    }
+  };
+  main.querySelector("#apply-domains").onclick = async () => {
+    try {
+      await api("/api/domains/apply", { method: "POST", body: {} });
+      refresh();
+    } catch (err) {
+      main.querySelector("#domain-err").textContent = err.message;
+    }
+  };
+  main.querySelector("#domain-list").onclick = async (event) => {
+    const button = event.target.closest("[data-remove-domain]");
+    if (!button) return;
+    try {
+      await api("/api/domains", { method: "DELETE", body: { domain: button.dataset.removeDomain } });
+      refresh();
+    } catch (err) {
+      main.querySelector("#domain-err").textContent = err.message;
+    }
+  };
+}
+
+function domainRows(domains, esc) {
+  if (!domains.length) return `<p class="muted">No extra names yet. The IDE still answers on its current address.</p>`;
+  return domains.map((row) => `<section class="panel">
+    <div class="row spread"><strong>${esc(row.domain)}</strong><button class="btn-ghost" type="button" data-remove-domain="${esc(row.domain)}">Remove</button></div>
+    <p class="muted">${esc(domainNote(row))}</p>
+  </section>`).join("");
+}
+
+function domainNote(row) {
+  if (row.nginx === "not-installed") return "Saved here. The server helper is not installed yet, so nginx was not changed.";
+  if (row.nginx === "failed") return row.detail || "Nginx was not changed.";
+  if (row.cert === "issued") return "This name serves the IDE. The certificate is ready.";
+  if (row.cert === "pending") return row.detail || "This name serves the IDE on HTTP. The certificate is waiting for DNS.";
+  if (row.cert === "unavailable") return "This name serves the IDE on HTTP. certbot is not installed.";
+  if (row.nginx === "applied") return "This name serves the IDE.";
+  return row.detail || "Saved.";
 }
 
 async function pairingPage(main, api, esc) {

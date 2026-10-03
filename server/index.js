@@ -15,6 +15,7 @@ import { endRun, pushLine, startRun, waitLine } from "./runtime.js";
 import { ensureControls, fileViews, controlView, publicControl, studentWriteBlock, setFileFlag, setBoardControl, moveFlags, clearFlags, flagMap, isLeadPlus } from "./controls.js";
 import { planSteps, startSandbox, readSandbox, writeSandboxStdin, stopSandbox } from "./sandbox.js";
 import { mintPreview, previewProject, previewBody } from "./preview-site.js";
+import { addDomain, listDomains, reapplyDomains, removeDomain } from "./domains.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC = join(ROOT, "public");
@@ -427,6 +428,31 @@ async function route(req, res, url) {
   if (userMatch && req.method === "DELETE") return deleteUser(res, user, Number(userMatch[1]));
   const passwordMatch = path.match(/^\/api\/users\/(\d+)\/password$/);
   if (passwordMatch && req.method === "POST") return resetPassword(req, res, user, Number(passwordMatch[1]));
+
+  if (path === "/api/domains" && req.method === "GET") {
+    requireRole(user, "admin");
+    return send(res, 200, { domains: listDomains(db), address: process.env.CLASS_PUBLIC_IP || "74.248.20.108" });
+  }
+  if (path === "/api/domains" && req.method === "POST") {
+    requireRole(user, "admin");
+    const body = await readJson(req);
+    const domains = await addDomain(db, user, body.domain, DATA_DIR, fail, pace);
+    audit(user, "domain.add", null, String(body.domain || "").slice(0, 253));
+    return send(res, 200, { domains });
+  }
+  if (path === "/api/domains/apply" && req.method === "POST") {
+    requireRole(user, "admin");
+    const domains = await reapplyDomains(db, user, DATA_DIR, fail, pace);
+    audit(user, "domain.apply", null, String(domains.length));
+    return send(res, 200, { domains });
+  }
+  if (path === "/api/domains" && req.method === "DELETE") {
+    requireRole(user, "admin");
+    const body = await readJson(req);
+    const domains = await removeDomain(db, user, body.domain, DATA_DIR, fail, pace);
+    audit(user, "domain.remove", null, String(body.domain || "").slice(0, 253));
+    return send(res, 200, { domains });
+  }
 
   if (path === "/api/assignments" && req.method === "GET") {
     requireRole(user, "admin");
