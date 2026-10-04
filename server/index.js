@@ -17,6 +17,7 @@ import { planSteps, startSandbox, readSandbox, writeSandboxStdin, stopSandbox } 
 import { mintPreview, previewProject, previewBody } from "./preview-site.js";
 import { addDomain, listDomains, reapplyDomains, removeDomain } from "./domains.js";
 import { discordRoute, notifyDiscord } from "./discord.js";
+import { chatRoute } from "./chat.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC = join(ROOT, "public");
@@ -465,6 +466,7 @@ async function route(req, res, url) {
   if (path === "/api/assignments" && req.method === "DELETE") return unassign(req, res, user);
 
   if (path === "/api/students" && req.method === "GET") return send(res, 200, { students: sessionStudents(db, user) });
+  if (await chatRoute({ db, req, res, url, user, send, fail, readJson, audit, requireUser }, path) !== false) return;
   if (await discordRoute({ db, req, res, url, user, send, fail, readJson, audit, requireUser }, path) !== false) return;
   if (await githubRoute({
     db, req, res, user, send, fail, readJson, audit, requireUser, projectView,
