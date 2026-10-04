@@ -2,283 +2,295 @@
   const root = document.createElement("div");
   root.id = "tf-chat";
   root.innerHTML = `
-    <section class="tf-panel" role="dialog" aria-label="TeachForth chat">
-      <header class="tf-hero">
-        <div class="tf-top">
-          <div class="tf-brand"><span class="tf-dot"></span> TeachForth</div>
-          <div>
-            <button class="tf-end" type="button" hidden>End chat</button>
-            <button class="tf-ghost tf-x" type="button" aria-label="Close">Close</button>
-          </div>
-        </div>
-        <nav class="tf-tabs"></nav>
-        <h2>Hi there</h2>
-        <p class="tf-lead">Ask a teacher. No Discord account needed.</p>
+    <section class="tf-panel" hidden>
+      <header class="tf-bar">
+        <strong class="tf-title">Help</strong>
+        <span style="flex:1"></span>
+        <button type="button" data-act="end" hidden>End</button>
+        <button class="tf-x" type="button" data-act="close" aria-label="Close">✕</button>
       </header>
-      <div class="tf-sheet"></div>
+      <nav class="tf-nav"></nav>
+      <div class="tf-body"></div>
+      <div class="tf-tools" hidden><button type="button" data-act="commands">Commands</button></div>
       <form class="tf-compose" hidden>
-        <button class="tf-apps" type="button" aria-label="Commands">⌘</button>
-        <textarea rows="1" maxlength="1800" placeholder="Send a message"></textarea>
-        <button class="tf-send" type="submit" aria-label="Send">↑</button>
+        <textarea rows="1" maxlength="1800" placeholder="Message"></textarea>
+        <button type="submit">Send</button>
       </form>
     </section>
-    <button class="tf-launcher" type="button" aria-label="Open chat">
-      <span class="tf-badge"></span>
-      <svg class="tf-icon-chat" width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 6.5A3.5 3.5 0 0 1 8.5 3h7A3.5 3.5 0 0 1 19 6.5v6A3.5 3.5 0 0 1 15.5 16H12l-4.2 3.2c-.7.5-1.8 0-1.8-.9V16A3.5 3.5 0 0 1 5 12.5v-6Z" fill="white"/></svg>
-      <svg class="tf-icon-x" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="white" stroke-width="2.4" stroke-linecap="round"/></svg>
+    <button class="tf-launcher" type="button" aria-label="Open help">
+      <span class="tf-badge" hidden></span>
+      <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path fill="white" d="M5 6.5A3.5 3.5 0 0 1 8.5 3h7A3.5 3.5 0 0 1 19 6.5v6A3.5 3.5 0 0 1 15.5 16H12l-4.2 3.2c-.7.5-1.8 0-1.8-.9V16A3.5 3.5 0 0 1 5 12.5v-6Z"/></svg>
     </button>`;
   document.body.appendChild(root);
 
-  const sheet = root.querySelector(".tf-sheet");
-  const tabs = root.querySelector(".tf-tabs");
+  const panel = root.querySelector(".tf-panel");
+  const body = root.querySelector(".tf-body");
+  const nav = root.querySelector(".tf-nav");
   const form = root.querySelector(".tf-compose");
+  const tools = root.querySelector(".tf-tools");
   const input = form.querySelector("textarea");
+  const end = root.querySelector("[data-act=end]");
   const badge = root.querySelector(".tf-badge");
-  const title = root.querySelector("h2");
-  const lead = root.querySelector(".tf-lead");
-  const end = root.querySelector(".tf-end");
+  const title = root.querySelector(".tf-title");
   let state = null;
   let view = "home";
   let topic = "general";
   let channelId = "";
-  let showMenu = false;
   let seen = 0;
-  let sending = false;
+  let busy = false;
+  let showMenu = false;
+  let painted = "";
 
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
-  const greeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return "Good morning";
-    if (hour < 18) return "Good afternoon";
-    return "Good evening";
-  };
-  const diagnostics = () => {
-    const nav = navigator;
-    const ua = nav.userAgent || "";
+  const convo = () => (state && state.conversation) || { open: false, messages: [] };
+  const mine = () => !channelId || !state || !state.conversation || state.conversation.channelId === channelId;
+
+  function diagnostics() {
+    const navg = navigator;
+    const ua = navg.userAgent || "";
     let browser = "Browser";
     if (/Edg\//.test(ua)) browser = "Edge";
     else if (/Chrome\//.test(ua)) browser = "Chrome";
     else if (/Safari\//.test(ua) && /Version\//.test(ua)) browser = "Safari";
     else if (/Firefox\//.test(ua)) browser = "Firefox";
     return {
-      browser, platform: nav.platform || "", language: nav.language || "",
+      browser, platform: navg.platform || "", language: navg.language || "",
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
       screen: `${screen.width}x${screen.height}`, viewport: `${window.innerWidth}x${window.innerHeight}`,
-      cookiesEnabled: nav.cookieEnabled === true, online: nav.onLine === true,
-      touch: (nav.maxTouchPoints || 0) > 0, doNotTrack: nav.doNotTrack === "1", userAgent: ua.slice(0, 180),
+      cookiesEnabled: navg.cookieEnabled === true, online: navg.onLine === true,
+      touch: (navg.maxTouchPoints || 0) > 0, userAgent: ua.slice(0, 180),
     };
-  };
+  }
+
   async function post(path, payload) {
     const res = await fetch(path, {
-      method: "POST", credentials: "same-origin",
+      method: "POST",
+      credentials: "same-origin",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload || {}),
     });
     const data = await res.json().catch(() => ({}));
     if (res.status === 401) {
-      const error = new Error("Sign in to chat with a teacher.");
+      const error = new Error("Sign in to message a teacher.");
       error.signin = true;
       throw error;
     }
     if (!res.ok) throw new Error(data.error || "Chat did not answer.");
     return data;
   }
-  const convo = () => (state && state.conversation) || { open: false, messages: [] };
-  const cards = (list) => (list || []).map((item) => `
-    <article class="tf-appcard"><small>TeachForth</small><strong>${esc(item.title)}</strong><p>${esc(item.body)}</p>
-    ${(item.buttons || []).length ? `<div class="tf-actions">${item.buttons.map((button) => `<button type="button" data-walk="${esc(button.id)}">${esc(button.label)}</button>`).join("")}</div>` : ""}
-    </article>`).join("");
-  const bubbles = (messages) => (messages || []).map((item, index) => `
-    <div class="tf-bubble ${esc(item.side || "staff")}" style="animation-delay:${Math.min(index, 8) * 40}ms">
-      <small>${esc(item.author || "TeachForth")}</small>${esc(item.text || "")}${cards(item.cards)}
-    </div>`).join("");
 
-  function paint() {
-    const staff = Boolean(state && state.staff);
-    const open = Boolean(convo().open);
-    const names = staff ? [["home", "Home"], ["inbox", "Inbox"], ["chat", "Chat"]] : [["home", "Home"], ["chat", "Messages"]];
-    tabs.innerHTML = state ? names.map(([id, label]) => `<button type="button" data-view="${id}" class="${view === id ? "on" : ""}">${label}</button>`).join("") : "";
-    form.hidden = !state || view === "home" || view === "inbox";
-    end.hidden = !(state && open && (view === "chat" || !staff));
-    const first = ((state && state.name) || "there").split(" ")[0];
-    if (view === "chat" && open) {
-      title.textContent = convo().label || "Chat";
-      lead.textContent = "We reply during class.";
-    } else if (view === "inbox") {
-      title.textContent = "Inbox";
-      lead.textContent = "Only tickets you are qualified for.";
-    } else {
-      title.textContent = `${greeting()}, ${esc(first)}`;
-      lead.textContent = staff ? "Qualified chats are in your inbox." : "Ask a teacher. No Discord account needed.";
-    }
-    if (!state) {
-      sheet.innerHTML = `<div class="tf-card"><b>Sign in</b><span class="tf-muted">Sign in to message a teacher.</span></div>`;
-      return;
-    }
-    if (view === "inbox" && staff) {
+  function cards(list) {
+    return (list || []).map((item) => `
+      <article class="tf-card"><strong>${esc(item.title)}</strong><p>${esc(item.body)}</p>
+      ${(item.buttons || []).length ? `<div class="tf-actions">${item.buttons.map((button) => `<button type="button" data-walk="${esc(button.id)}">${esc(button.label)}</button>`).join("")}</div>` : ""}
+      </article>`).join("");
+  }
+
+  function render() {
+    if (!state) return `<p class="tf-empty">Sign in to message a teacher.</p>`;
+    if (view === "inbox") {
       const groups = state.inbox || [];
-      sheet.innerHTML = groups.length ? groups.map((group) => `
-        <div class="tf-group">${esc(group.label)}</div>
-        ${group.tickets.map((ticket) => `<button class="tf-ticket" type="button" data-channel="${esc(ticket.channelId)}"><b>${esc(ticket.name)}</b><span class="tf-muted">${esc(ticket.preview || "No messages yet")}</span></button>`).join("")}
-      `).join("") : `<p class="tf-muted">No open chats for your qualifications.</p>`;
-      return;
+      if (!groups.length) return `<p class="tf-empty">No open chats for your qualifications.</p>`;
+      return groups.map((group) => `<div class="tf-label">${esc(group.label)}</div>${group.tickets.map((ticket) => `
+        <button class="tf-row" type="button" data-channel="${esc(ticket.channelId)}"><b>${esc(ticket.name)}</b><span>${esc(ticket.preview || "No messages yet")}</span></button>`).join("")}`).join("");
     }
     if (view === "chat") {
+      const open = Boolean(convo().open);
+      const closed = (convo().messages || []).length && !open;
       const pending = convo().pendingDiagnostic;
-      const closed = convo().messages.length && !open;
-      sheet.innerHTML = `
-        ${closed ? `<div class="tf-closed"><strong>This chat is closed.</strong><p class="tf-muted">Send a message to start a new one.</p></div>` : ""}
-        ${pending ? `<div class="tf-consent"><strong>Share device details?</strong><p class="tf-muted">Browser, device, language, timezone, and screen size. Cookie values are not sent.</p><div class="tf-actions"><button class="primary" type="button" data-consent="yes">Allow</button><button type="button" data-consent="no">Not now</button></div></div>` : ""}
-        ${showMenu ? menu() : ""}
-        <div class="tf-stream">${bubbles(convo().messages)}${sending ? `<div class="tf-typing"><i></i><i></i><i></i></div>` : ""}</div>`;
-      sheet.scrollTop = sheet.scrollHeight;
-      return;
+      return `
+        ${closed ? `<div class="tf-banner"><strong>Closed</strong><span class="tf-note">Send a message to start another.</span></div>` : ""}
+        ${pending ? `<div class="tf-banner"><strong>Share this browser and device?</strong><span class="tf-note">Cookie values are not sent.</span><div class="tf-actions"><button class="primary" type="button" data-consent="yes">Allow</button><button type="button" data-consent="no">Not now</button></div></div>` : ""}
+        ${showMenu ? `<div class="tf-menu">${(state.commands || []).map((item) => `<button type="button" data-command=".${esc(item.name)} ">${esc(item.name)}</button>`).join("")}</div>` : ""}
+        ${(convo().messages || []).map((item) => `<div class="tf-msg ${esc(item.side || "staff")}"><small>${esc(item.author || "TeachForth")}</small><p>${esc(item.text || "")}</p>${cards(item.cards)}</div>`).join("")}
+        ${busy ? `<p class="tf-empty">Sending…</p>` : ""}`;
     }
-    const topics = (state.topics || []).map((item) => `<button class="tf-topic" type="button" data-topic="${esc(item.id)}"><b>${esc(item.label)}</b><span class="tf-muted">${esc(item.blurb)}</span></button>`).join("");
+    const topics = (state.topics || []).map((item) => `<button class="tf-row" type="button" data-topic="${esc(item.id)}"><b>${esc(item.label)}</b><span>${esc(item.blurb)}</span></button>`).join("");
     const recent = (convo().messages || []).slice(-1)[0];
-    sheet.innerHTML = `<div class="tf-home">
-      ${recent ? `<button class="tf-card tf-ticket" type="button" data-view-jump="chat"><b>${open ? "Continue" : "Last chat closed"}</b><span class="tf-muted">${esc(recent.text || "Open it")}</span></button>` : `<div class="tf-card"><b>Send us a message</b><span class="tf-muted">Pick a topic and we will route it to a qualified teacher.</span></div>`}
-      <div class="tf-group">What do you need?</div>
-      ${topics}
-    </div>`;
+    return `${recent ? `<button class="tf-row" type="button" data-act="view" data-view="chat"><b>${convo().open ? "Continue" : "Last chat"}</b><span>${esc(recent.text || "Open it")}</span></button>` : `<p class="tf-empty">Pick a topic, then send a message.</p>`}<div class="tf-label">Topic</div>${topics}`;
   }
-  function menu() {
-    return `<div class="tf-menu">${((state && state.commands) || []).map((item) => `<button type="button" data-command=".${esc(item.name)}${item.usage ? " " : ""}">${esc(item.name)}</button>`).join("")}</div>`;
+
+  function paint(force) {
+    const messages = convo().messages || [];
+    const key = [view, convo().open, convo().channelId, convo().pendingDiagnostic, busy, showMenu, messages.map((item) => `${item.id}:${item.text}`).join("|"), JSON.stringify(state && state.inbox || [])].join("~");
+    if (!force && key === painted) return;
+    const top = body.scrollTop;
+    const nearBottom = body.scrollHeight - top - body.clientHeight < 72;
+    painted = key;
+    const staff = Boolean(state && state.staff);
+    const tabs = staff ? [["home", "Home"], ["inbox", "Inbox"], ["chat", "Chat"]] : [["home", "Home"], ["chat", "Chat"]];
+    nav.innerHTML = state ? tabs.map(([id, label]) => `<button type="button" data-act="view" data-view="${id}" class="${view === id ? "on" : ""}">${label}</button>`).join("") : "";
+    end.hidden = !convo().open;
+    tools.hidden = !state || view === "home" || view === "inbox";
+    form.hidden = !state || view === "home" || view === "inbox";
+    title.textContent = view === "inbox" ? "Inbox" : view === "chat" ? (convo().label || "Chat") : "Help";
+    input.placeholder = convo().open ? "Message" : "Message to start a new chat";
+    body.innerHTML = render();
+    body.scrollTop = force || nearBottom || busy ? body.scrollHeight : top;
   }
-  function take(data) {
+
+  function adopt(data, keepViewed) {
     if (!data) return;
-    state = { ...(state || {}), ...data };
-    if (data.conversation) {
-      state.conversation = data.conversation;
-      if (data.conversation.open) channelId = data.conversation.channelId || channelId;
-    }
+    const current = state && state.conversation;
+    const incoming = data.conversation;
+    const viewingOther = Boolean(keepViewed && channelId && current && current.channelId === channelId && incoming && incoming.channelId !== channelId);
+    state = { ...(state || {}), ...data, conversation: viewingOther ? current : (incoming || current) };
     if (data.inbox) state.inbox = data.inbox;
+    if (incoming) state.own = incoming;
+    if (!viewingOther && incoming) channelId = incoming.channelId || "";
   }
+
   async function refresh() {
     try {
-      const data = await post("/api/chat/session", { channelId });
+      const data = await post("/api/chat/session", {});
       const count = ((data.conversation && data.conversation.messages) || []).length;
       if (!root.classList.contains("open") && count > seen) {
-        badge.textContent = String(count - seen);
-        badge.classList.add("on");
-      } else if (root.classList.contains("open")) {
-        seen = count;
-        badge.classList.remove("on");
+        badge.hidden = false;
+        badge.textContent = String(Math.min(count - seen, 9));
       }
-      take(data);
-      if (root.classList.contains("open")) paint();
+      const viewingOther = Boolean(channelId && state && state.conversation && state.conversation.channelId === channelId
+        && data.conversation && data.conversation.channelId !== channelId);
+      adopt(data, true);
+      if (viewingOther && root.classList.contains("open")) {
+        const thread = await post("/api/chat/thread", { channelId }).catch(() => null);
+        if (thread && thread.conversation) state.conversation = thread.conversation;
+      }
+      if (root.classList.contains("open")) paint(false);
     } catch (err) {
-      if (!state) {
-        state = null;
-        sheet.innerHTML = `<div class="tf-card"><b>${err.signin ? "Sign in" : "Chat"}</b><span class="tf-muted">${esc(err.message)}</span></div>`;
-      }
+      if (!state && root.classList.contains("open")) body.innerHTML = `<p class="tf-empty">${esc(err.message)}</p>`;
     }
   }
-  function openTopic(id) {
-    topic = id || "general";
-    view = "chat";
-    showMenu = false;
-    input.placeholder = convo().open ? "Message" : "Message to start a new chat";
-    paint();
-    input.focus();
+
+  function openPanel(open) {
+    root.classList.toggle("open", open);
+    panel.hidden = !open;
+    if (!open) return;
+    seen = (convo().messages || []).length;
+    badge.hidden = true;
+    paint(true);
+    refresh();
   }
+
   async function send(event) {
     event.preventDefault();
     const text = input.value.trim();
-    if (!text || sending) return;
-    const open = convo().open;
+    if (!text || busy) return;
+    const open = Boolean(convo().open) && mine();
     input.value = "";
     input.style.height = "auto";
-    sending = true;
+    busy = true;
     view = "chat";
-    paint();
+    paint(true);
     try {
-      const data = open
+      adopt(open
         ? await post("/api/chat/send", { text, channelId: channelId || convo().channelId || "" })
-        : await post("/api/chat/open", { topic, message: text });
-      take(data);
+        : await post("/api/chat/open", { topic, message: text }));
     } catch (err) {
-      sheet.insertAdjacentHTML("beforeend", `<p class="tf-muted">${esc(err.message)}</p>`);
+      body.insertAdjacentHTML("beforeend", `<p class="tf-empty">${esc(err.message)}</p>`);
     } finally {
-      sending = false;
-      paint();
-    }
-  }
-  async function endChat() {
-    if (!convo().open) return;
-    sending = true;
-    try {
-      take(await post("/api/chat/close", { channelId: channelId || convo().channelId || "" }));
-      channelId = "";
-    } catch (err) {
-      sheet.insertAdjacentHTML("beforeend", `<p class="tf-muted">${esc(err.message)}</p>`);
-    } finally {
-      sending = false;
-      paint();
+      busy = false;
+      paint(true);
     }
   }
 
-  root.querySelector(".tf-launcher").addEventListener("click", () => {
-    root.classList.toggle("open");
-    if (root.classList.contains("open")) {
-      seen = (convo().messages || []).length;
-      badge.classList.remove("on");
-      paint();
-      refresh();
-    }
-  });
-  root.querySelector(".tf-x").addEventListener("click", () => root.classList.remove("open"));
-  end.addEventListener("click", endChat);
-  root.querySelector(".tf-apps").addEventListener("click", () => { showMenu = !showMenu; view = "chat"; paint(); });
-  form.addEventListener("submit", send);
-  input.addEventListener("input", () => {
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
-  });
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); }
-  });
-  sheet.addEventListener("click", async (event) => {
-    const topicButton = event.target.closest("[data-topic]");
-    if (topicButton) return openTopic(topicButton.dataset.topic);
-    const jump = event.target.closest("[data-view-jump]");
-    if (jump) { view = jump.dataset.viewJump; paint(); return; }
-    const tab = event.target.closest("[data-view]");
-    if (tab) { view = tab.dataset.view; paint(); return; }
-    const ticket = event.target.closest("[data-channel]");
-    if (ticket) {
-      channelId = ticket.dataset.channel;
-      view = "chat";
-      const data = await post("/api/chat/thread", { channelId }).catch((err) => ({ error: err.message }));
-      if (data.conversation) take(data);
-      paint();
+  root.addEventListener("click", async (event) => {
+    if (event.target.closest(".tf-launcher")) {
+      openPanel(!root.classList.contains("open"));
       return;
     }
-    const command = event.target.closest("[data-command]");
-    if (command) { input.value = command.dataset.command; showMenu = false; input.focus(); return; }
-    const walk = event.target.closest("[data-walk]");
-    if (walk) {
-      const data = await post("/api/chat/walk", { action: walk.dataset.walk, channelId }).catch(() => null);
-      if (data && data.cards) {
-        state.conversation.messages.push({ author: "TeachForth", side: "card", text: "", cards: data.cards });
-        paint();
+    const button = event.target.closest("button");
+    if (!button || !panel.contains(button)) return;
+    if (button.dataset.act === "close") return openPanel(false);
+    if (button.dataset.act === "end") {
+      if (!convo().open || busy) return;
+      busy = true;
+      try {
+        adopt(await post("/api/chat/close", { channelId: channelId || convo().channelId || "" }));
+      } catch (err) {
+        body.insertAdjacentHTML("beforeend", `<p class="tf-empty">${esc(err.message)}</p>`);
+      } finally {
+        busy = false;
+        paint(true);
       }
       return;
     }
-    const consent = event.target.closest("[data-consent]");
-    if (!consent) return;
-    const allow = consent.dataset.consent === "yes";
-    const data = await post("/api/chat/diagnostics", {
-      consent: allow,
-      diagnostics: allow ? diagnostics() : null,
-      channelId: channelId || convo().channelId || "",
-    }).catch((err) => ({ error: err.message }));
-    if (data.conversation) take(data);
-    paint();
+    if (button.dataset.act === "commands") {
+      showMenu = !showMenu;
+      view = "chat";
+      paint(true);
+      return;
+    }
+    if (button.dataset.act === "view") {
+      view = button.dataset.view || "home";
+      showMenu = false;
+      paint(true);
+      return;
+    }
+    if (button.dataset.topic) {
+      topic = button.dataset.topic;
+      if (state && state.own) {
+        state.conversation = state.own;
+        channelId = state.own.channelId || "";
+      }
+      view = "chat";
+      showMenu = false;
+      paint(true);
+      input.focus();
+      return;
+    }
+    if (button.dataset.channel) {
+      channelId = button.dataset.channel;
+      view = "chat";
+      const data = await post("/api/chat/thread", { channelId }).catch((err) => ({ error: err.message }));
+      if (data.conversation) {
+        state.conversation = data.conversation;
+        paint(true);
+      }
+      return;
+    }
+    if (button.dataset.command) {
+      input.value = button.dataset.command;
+      showMenu = false;
+      input.focus();
+      paint(true);
+      return;
+    }
+    if (button.dataset.walk) {
+      const data = await post("/api/chat/walk", { action: button.dataset.walk, channelId }).catch(() => null);
+      if (data && data.cards && state.conversation) {
+        state.conversation.messages.push({ author: "TeachForth", side: "card", text: "", cards: data.cards });
+        paint(true);
+      }
+      return;
+    }
+    if (button.dataset.consent) {
+      const allow = button.dataset.consent === "yes";
+      const data = await post("/api/chat/diagnostics", {
+        consent: allow,
+        diagnostics: allow ? diagnostics() : null,
+        channelId: channelId || convo().channelId || "",
+      }).catch((err) => ({ error: err.message }));
+      if (data.conversation) adopt(data);
+      paint(true);
+    }
   });
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") root.classList.remove("open"); });
-  paint();
+
+  form.addEventListener("submit", send);
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 96)}px`;
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && root.classList.contains("open")) openPanel(false);
+  });
+
   refresh();
-  window.setInterval(refresh, 8000);
-  window.TeachForthChat = { open: () => { root.classList.add("open"); refresh(); } };
+  window.setInterval(() => { if (!busy) refresh(); }, 12000);
+  window.TeachForthChat = { open: () => openPanel(true) };
 })();

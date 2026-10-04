@@ -25,7 +25,8 @@ async function handle(ctx, path) {
   requireUser(user);
   ensureTables(db);
   const body = await ctx.readJson(ctx.req);
-  await attachRemoteQualifications(db, user);
+  if (path === "/api/chat/session") hydrateQualifications(db, user);
+  else await attachRemoteQualifications(db, user);
   const route = {
     "/api/chat/session": session,
     "/api/chat/thread": threadView,
@@ -306,15 +307,35 @@ function topicCovered(db, topic) {
   return Boolean(db.prepare("SELECT 1 FROM chat_qualifications WHERE topic = ? LIMIT 1").get(topic));
 }
 
+function hydrateQualifications(db, user) {
+  user.topics = new Set(mine(db, user.id));
+  if (!user.discord_id || !isStaff(user)) return;
+  const key = String(user.discord_id);
+  const hit = remoteQualifications.get(key);
+  if (hit && hit.until > Date.now()) {
+    for (const topic of hit.topics) user.topics.add(topic);
+    return;
+  }
+  if (hit && hit.pending) return;
+  remoteQualifications.set(key, { until: 0, topics: hit?.topics || [], pending: true });
+  attachRemoteQualifications(db, user).catch(() => {
+    const current = remoteQualifications.get(key);
+    if (current) current.pending = false;
+  });
+}
+
 async function attachRemoteQualifications(db, user) {
   user.topics = new Set(mine(db, user.id));
   if (!user.discord_id || !isStaff(user)) return;
   const key = String(user.discord_id);
   const hit = remoteQualifications.get(key);
-  const topics = hit && hit.until > Date.now()
-    ? hit.topics
-    : (await mirror(user, "/widget/qualify", { action: "list" }, null, db))?.qualifications || [];
-  if (!hit || hit.until <= Date.now()) remoteQualifications.set(key, { until: Date.now() + 60_000, topics });
+  if (hit && hit.until > Date.now() && !hit.pending) {
+    for (const topic of hit.topics) user.topics.add(topic);
+    return;
+  }
+  const data = await mirror(user, "/widget/qualify", { action: "list" }, null, db, 1200);
+  const topics = data?.qualifications || hit?.topics || [];
+  remoteQualifications.set(key, { until: Date.now() + 60_000, topics, pending: false });
   for (const topic of topics) user.topics.add(topic);
 }
 
@@ -391,7 +412,7 @@ function label(topic) {
   return TOPICS.find((item) => item[0] === topic)?.[1] || "Help";
 }
 
-async function mirror(user, path, extra, thread, db) {
+async function mirror(user, path, extra, thread, db, timeout = 8000) {
   if (!user.discord_id) return null;
   const secret = readSecret();
   if (!secret) return null;
@@ -400,7 +421,7 @@ async function mirror(user, path, extra, thread, db) {
       method: "POST",
       headers: { "content-type": "application/json", "x-teachforth-discord": secret },
       body: JSON.stringify({ discordId: String(user.discord_id), name: user.name || "", role: user.role || "student", ...extra }),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(timeout),
     });
     const data = await response.json().catch(() => ({}));
     const channelId = data?.conversation?.channelId;
