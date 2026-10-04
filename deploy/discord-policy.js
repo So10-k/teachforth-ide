@@ -7,6 +7,11 @@ export const COLOR = 0x7a1fa3;
 export const COMMANDS = [
   { name: "help", description: "What you can do here" },
   {
+    name: "roles",
+    description: "Refresh your TeachForth role from the website",
+    options: [{ name: "everyone", description: "Admins only: refresh every linked account", type: 5, required: false }],
+  },
+  {
     name: "login",
     description: "Register for the TeachForth helpdesk",
     options: [{ name: "code", description: "Code from the helpdesk, if you have one", type: 3, required: false }],
@@ -196,7 +201,7 @@ export const COMMANDS = [
   },
 ];
 
-const OPEN = new Set(["help", "class", "link", "ping", "status", "ask", "login"]);
+const OPEN = new Set(["help", "class", "link", "ping", "status", "ask", "login", "roles"]);
 const LINKED = new Set(["unlink", "me", "whoami", "github", "projects", "share"]);
 const STAFF = new Set(["live", "find", "lookup", "reply", "note", "close", "snippet", "logs", "contact", "claim"]);
 const ADMIN = new Set(["power", "logins", "desk"]);
@@ -226,7 +231,7 @@ export function helpText(role, flags = {}) {
   const sessionLead = Boolean(flags.sessionLead);
   const lines = [
     "Ask if class is on with /class, open your work with /projects, or share a project in the channel with /share.",
-    "Connect this account first: grab a code from the IDE account menu, then /link. Teachers register for the helpdesk with /login.",
+    "Connect this account first: grab a code from the IDE account menu, then /link. Refresh your Discord role with /roles. Teachers register for the helpdesk with /login.",
   ];
   lines.splice(1, 0, "Message the teachers with /ask, or just send me a direct message.");
   if (role && role !== "student") {
@@ -235,7 +240,7 @@ export function helpText(role, flags = {}) {
   }
   if (role === "admin" || sessionLead) lines.push("You can send a student a private home link with /home.");
   if (role === "admin" || role === "chapter_lead") lines.push("You can stop desk messages with /block.");
-  if (role === "admin") lines.push("You can start class with /power, pick a sign-in channel with /logins, and open the desk with /desk here.");
+  if (role === "admin") lines.push("You can start class with /power, pick a sign-in channel with /logins, open the desk with /desk here, and refresh every role with /roles everyone.");
   return lines.join(" ");
 }
 
