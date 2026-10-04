@@ -2,7 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { canAccessProject, canSeeStudent, canViewProfile, isStaff } from "./org.js";
-import { isLeadPlus } from "./controls.js";
+import { supportRoute } from "./support.js";
+import { isLeadPlus, isSessionLead } from "./controls.js";
 import { createHomeLink } from "./homework.js";
 import { pace } from "./github.js";
 
@@ -10,6 +11,7 @@ const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_MS = 10 * 60 * 1000;
 
 export function discordRoute(ctx, path) {
+  if (path.startsWith("/api/discord/support")) return supportRoute(ctx, path);
   if (!path.startsWith("/api/discord")) return false;
   const { req } = ctx;
   if (path === "/api/discord/claim" && req.method === "POST") return claim(ctx);
@@ -27,6 +29,7 @@ export function discordRoute(ctx, path) {
   if (path === "/api/discord/code" && req.method === "POST") return makeCode(ctx);
   if (path === "/api/discord/setup" && (req.method === "GET" || req.method === "POST")) return guildSetup(ctx);
   if (path === "/api/discord/class" && req.method === "GET") return classNow(ctx);
+  if (path === "/api/discord/roster" && req.method === "GET") return roster(ctx);
   if (path === "/api/discord/home" && req.method === "POST") return homeLink(ctx);
   return false;
 }
@@ -161,6 +164,7 @@ function profile(ctx) {
     githubLinked: Boolean(user.github_token),
     githubLogin: user.github_token ? user.github_login || "" : "",
     projectCount: count?.n || 0,
+    sessionLead: isSessionLead(ctx.db, user),
   });
 }
 
@@ -178,6 +182,7 @@ function classNow(ctx) {
   ctx.send(ctx.res, 200, {
     name: user.name,
     role: user.role,
+    sessionLead: isSessionLead(ctx.db, user),
     pair: pair ? { block: pair.block, teacher: pair.teacher, student: pair.student, studentId: pair.student_id } : null,
     pairs: isStaff(user) ? livePairs(ctx, user) : [],
   });
@@ -185,7 +190,7 @@ function classNow(ctx) {
 
 async function homeLink(ctx) {
   const user = linkedUser(ctx);
-  if (user.role === "student") ctx.fail(403, "Only a session lead can send someone home");
+  if (user.role !== "admin" && !isSessionLead(ctx.db, user)) ctx.fail(403, "Only the current session lead can send someone home");
   if (!pace(`discord-home:${user.id}`, 3, 10 * 60_000)) ctx.fail(429, "Wait a few minutes before making another home link.");
   const body = await ctx.readJson(ctx.req);
   const studentQuery = safeLike(body.student);
@@ -439,6 +444,26 @@ function usage(ctx) {
   if (user.role !== "admin") ctx.fail(403, "You cannot do that");
   const day = ctx.db.prepare("SELECT * FROM usage_days ORDER BY day DESC LIMIT 1").get() || {};
   ctx.send(ctx.res, 200, { day: day.day || "", requests: day.requests || 0, logins: day.logins || 0, editorOpens: day.editor_opens || 0 });
+}
+
+function roster(ctx) {
+  requireSecret(ctx);
+  if (!pace("discord-roster", 12, 60_000)) ctx.fail(429, "Wait a minute.");
+  const leads = new Set(
+    ctx.db.prepare(
+      `SELECT u.discord_id FROM blocks b
+       JOIN users u ON u.id = b.lead_teacher_id
+       WHERE b.status = 'live' AND u.discord_id IS NOT NULL AND u.discord_id != ''`,
+    ).all().map((row) => row.discord_id),
+  );
+  const people = ctx.db.prepare(
+    "SELECT discord_id, role FROM users WHERE discord_id IS NOT NULL AND discord_id != ''",
+  ).all().filter((row) => /^\d{17,20}$/.test(String(row.discord_id))).map((row) => ({
+    discordId: row.discord_id,
+    role: row.role,
+    sessionLead: leads.has(row.discord_id),
+  }));
+  ctx.send(ctx.res, 200, { people });
 }
 
 function linkedUser(ctx) {

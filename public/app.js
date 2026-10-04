@@ -991,6 +991,7 @@ function openAccount() {
     ${me.role === "student" ? `<a class="menu-link" href="/api/github/connect">${me.githubLinked ? "Link GitHub again" : "Connect GitHub"}</a>` : ""}
     ${me.role === "admin" ? `<a class="menu-link" href="${POWER_URL}">Power panel</a>` : ""}
     <button id="discord-link" type="button">${me.discordLinked ? "Unlink Discord" : "Link Discord"}</button>
+    <button id="support-code" type="button">Support code</button>
     <button id="signout">Sign out</button>`;
   document.body.append(backdrop, menu);
   backdrop.onclick = closePop;
@@ -1010,6 +1011,18 @@ function openAccount() {
       err.className = "muted";
       err.textContent = `In the TeachForth Discord, run /link and paste ${data.code}. It expires in 10 minutes.`;
     } catch (error) {
+      err.textContent = error.message;
+    }
+  };
+  menu.querySelector("#support-code").onclick = async () => {
+    const err = menu.querySelector("#support-err") || menu.appendChild(document.createElement("p"));
+    err.id = "support-err";
+    err.className = "muted";
+    try {
+      const data = await api("/api/discord/support-code", { method: "POST", body: {} });
+      err.textContent = `Support code: ${data.code}. In the help chat, press Support code and paste it. It expires in 15 minutes. This is not your password.`;
+    } catch (error) {
+      err.className = "error";
       err.textContent = error.message;
     }
   };

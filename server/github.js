@@ -321,6 +321,23 @@ export async function renameLinkedRepo(db, project, title) {
   return { githubRepo: full, githubUrl: url, title: displayTitle(title).slice(0, 80) };
 }
 
+export async function peekFiles(db, project) {
+  const local = db.prepare("SELECT path, content FROM files WHERE project_id = ? ORDER BY path").all(project.id)
+    .filter((file) => !isHiddenFile(file.path));
+  if (local.length) return { source: "class", files: local, githubUrl: project.github_url || "" };
+  if (!project.github_repo) return { source: "empty", files: [], githubUrl: "" };
+  const owner = db.prepare("SELECT github_token FROM users WHERE id = ?").get(project.owner_id);
+  if (!owner?.github_token) return { source: "closed", files: [], githubUrl: project.github_url || "" };
+  const [login, repo] = String(project.github_repo).split("/");
+  if (!login || !repo) return { source: "closed", files: [], githubUrl: project.github_url || "" };
+  const files = await pullRepo(owner.github_token, login, repo);
+  return {
+    source: "github",
+    githubUrl: project.github_url || "",
+    files: files.filter((file) => !isHiddenFile(file.path)).map((file) => ({ path: file.path, content: file.content })),
+  };
+}
+
 export async function hydrateProject(db, project) {
   if (project.kind !== "github" || project.open) return project;
   guard(`hydrate:${project.id}`, 1, 8_000, "That project is already opening.");

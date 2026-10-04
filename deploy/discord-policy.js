@@ -198,28 +198,43 @@ export const COMMANDS = [
 
 const OPEN = new Set(["help", "class", "link", "ping", "status", "ask", "login"]);
 const LINKED = new Set(["unlink", "me", "whoami", "github", "projects", "share"]);
-const STAFF = new Set(["live", "find", "lookup", "home", "reply", "note", "close", "snippet", "logs", "block", "contact", "claim"]);
+const STAFF = new Set(["live", "find", "lookup", "reply", "note", "close", "snippet", "logs", "contact", "claim"]);
 const ADMIN = new Set(["power", "logins", "desk"]);
 
-export function commandAllowed(name, role) {
+export function commandAllowed(name, role, flags = {}) {
+  const sessionLead = Boolean(flags.sessionLead);
   if (OPEN.has(name)) return true;
   if (!role) return false;
   if (LINKED.has(name)) return true;
-  if (STAFF.has(name)) return role !== "student";
+  if (name === "home") return role === "admin" || sessionLead;
+  if (name === "block") return role === "admin" || role === "chapter_lead";
   if (ADMIN.has(name)) return role === "admin";
+  if (STAFF.has(name)) return role !== "student";
   return false;
 }
 
-export function helpText(role) {
+export function commandDenied(name, role) {
+  if (!role) return ["Link your account", "Open the IDE, grab a code from the account menu, then use /link."];
+  if (name === "home") return ["That's for the session lead", "Only the teacher leading the live block, or an admin, can send someone home."];
+  if (name === "block") return ["That's for a chapter lead", "Blocking messages is for a chapter lead or an admin."];
+  if (ADMIN.has(name)) return ["That's for an admin", "Link an admin account to use that."];
+  if (role === "student") return ["That's not yours", "Students can use /class, /projects, /share, and /ask."];
+  return ["That's not yours", "You can only open people and projects you're allowed to see."];
+}
+
+export function helpText(role, flags = {}) {
+  const sessionLead = Boolean(flags.sessionLead);
   const lines = [
     "Ask if class is on with /class, open your work with /projects, or share a project in the channel with /share.",
     "Connect this account first: grab a code from the IDE account menu, then /link. Teachers register for the helpdesk with /login.",
   ];
   lines.splice(1, 0, "Message the teachers with /ask, or just send me a direct message.");
   if (role && role !== "student") {
-    lines.push("You can see who's live, find a student, and send someone a private home link.");
+    lines.push("You can see who's live and find a student in your class.");
     lines.push("In a desk thread, type to write back. /note stays private, /close ends it, and /logs reads old ones.");
   }
+  if (role === "admin" || sessionLead) lines.push("You can send a student a private home link with /home.");
+  if (role === "admin" || role === "chapter_lead") lines.push("You can stop desk messages with /block.");
   if (role === "admin") lines.push("You can start class with /power, pick a sign-in channel with /logins, and open the desk with /desk here.");
   return lines.join(" ");
 }

@@ -293,7 +293,7 @@ async function accountsPage(main, api, esc, powerUrl) {
           <p class="error" id="gh-err"></p>
         </section>
         <section class="panel form-card"><h2>Discord</h2>
-          <p>Link Discord from the account menu. The helper can start the class server, post sign-ins, and share a project link. It never posts code or passwords.</p>
+          <p>Link Discord from the account menu. The helper can start the class server, post sign-ins, and share a project link. A support code lets a teacher read that ticket's projects in the staff channel. It never posts passwords or tokens.</p>
           <label>Discord server ID<input id="discord-guild" placeholder="Leave blank until the server is chosen" value="${esc(discord.guildId || "")}" inputmode="numeric" autocomplete="off"></label>
           <button class="btn" id="save-discord" type="button">Save server ID</button>
           <p class="muted">${discord.reachable ? "Helper is reachable. Blank means commands are not limited to one server yet." : "Helper is not reachable from this server."}</p>

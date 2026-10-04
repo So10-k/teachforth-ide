@@ -9,6 +9,7 @@ import {
   buttons,
   card,
   commandAllowed,
+  commandDenied,
   helpText,
   languageLabel,
   messageData,
@@ -125,7 +126,10 @@ async function answerCommand(body) {
   if (!id || !pace(`cmd:${id}`, 8, 60_000)) return say("Slow down", "Give it a minute, then try again.");
   if (!body.guild_id && !DM_COMMANDS.has(name)) return say("Use that in the server", "Open the TeachForth Discord for staff tools.");
   if (config.guildId && body.guild_id && body.guild_id !== config.guildId) return say("Wrong server", "Use me in the TeachForth Discord.");
-  if (name === "help") return helpMessage(cachedRole(id));
+  if (name === "help") {
+    const live = await liveRole(id);
+    return helpMessage(live.role || cachedRole(id), live.sessionLead);
+  }
   return run(name, body, id);
 }
 
@@ -143,19 +147,21 @@ async function run(name, body, id) {
   if (process.env.DESK === "1" && DESK_COMMANDS.has(command)) {
     const live = await liveRole(id);
     const currentRole = live.role || cachedRole(id);
-    if (!commandAllowed(command, currentRole)) {
-      return currentRole ? say("That's not yours", "Only staff can use the desk tools.") : say("Link your account", "Open the IDE, grab a code from the account menu, then use /link.");
+    if (!commandAllowed(command, currentRole, { sessionLead: live.sessionLead })) {
+      const [title, description] = commandDenied(command, currentRole);
+      return say(title, description);
     }
     return desk.command(command, body, id, loadConfig());
   }
   const local = command === "power" || command === "logins";
-  const role = local ? { role: adminRole(id), off: false } : await liveRole(id);
+  const role = local ? { role: adminRole(id), sessionLead: false, off: false } : await liveRole(id);
   if (!local && role.off) return classMissing();
   if (!local && role.unreachable && !role.role) return classMissing();
   const current = role.role;
-  if (!commandAllowed(command, current)) {
+  if (!commandAllowed(command, current, { sessionLead: role.sessionLead })) {
     if (local) return say("Link an admin first", "Link once while class is on. After that, you can start it from here even when it's off.");
-    return current ? say("That's not yours", "You can only open people and projects you're allowed to see.") : say("Link your account", "Open the IDE, grab a code from the account menu, then use /link.");
+    const [title, description] = commandDenied(command, current);
+    return say(title, description);
   }
   if (command === "unlink") return unlink(id);
   if (command === "me") return meCard(id);
@@ -471,8 +477,8 @@ function say(title, description, links = [], fields = [], timestamp = "") {
   };
 }
 
-function helpMessage(role) {
-  return say("Here's what I can do", helpText(role), [{ label: "Open IDE", url: IDE_URL }]);
+function helpMessage(role, sessionLead = false) {
+  return say("Here's what I can do", helpText(role, { sessionLead }), [{ label: "Open IDE", url: IDE_URL }]);
 }
 
 function fromApi(result, title = "That didn't work") {
@@ -513,15 +519,15 @@ async function liveRole(id) {
   const result = await classGet(`/api/discord/profile?discordId=${id}`);
   if (result.status === 200) {
     remember(id, result.data.role);
-    return { role: result.data.role, off: false };
+    return { role: result.data.role, sessionLead: Boolean(result.data.sessionLead), off: false };
   }
   if (result.status === 0) {
     const status = await power("GET", "/api/internal/status");
     const phase = status.data?.phase;
     const up = status.ok && (phase === "on" || phase === "starting" || status.data?.running);
-    return { role: cachedRole(id), off: !up, unreachable: up };
+    return { role: cachedRole(id), sessionLead: false, off: !up, unreachable: up };
   }
-  return { role: "", off: false };
+  return { role: "", sessionLead: false, off: false };
 }
 
 async function classMissing() {

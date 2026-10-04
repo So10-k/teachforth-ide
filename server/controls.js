@@ -26,6 +26,11 @@ export function studentMaySeePath(role, path, hiddenFlag) {
   return true;
 }
 
+export function isSessionLead(db, user) {
+  if (!user || user.role === "student") return false;
+  return Boolean(db.prepare("SELECT 1 AS ok FROM blocks WHERE status = 'live' AND lead_teacher_id = ?").get(user.id));
+}
+
 export function isLeadPlus(db, user, studentId) {
   if (!user || !studentId || user.role === "student" || user.id === studentId) return false;
   if (user.role === "admin") return true;

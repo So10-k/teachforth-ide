@@ -45,7 +45,7 @@ child.stderr.on("data", (buf) => { logs += buf; });
 const base = `http://127.0.0.1:${port}`;
 const homeDir = mkdtempSync(join(tmpdir(), "tf-home-"));
 writeFileSync(join(homeDir, "token"), "selftest-home-token\n");
-const homePort = 8794;
+const homePort = 8798;
 const homeBase = `http://127.0.0.1:${homePort}`;
 let homeLogs = "";
 const homeChild = spawn(process.execPath, ["deploy/home-server.js"], {
@@ -552,7 +552,7 @@ try {
   const cleared = await send("/api/domains", { method: "DELETE", cookie: admin.cookie, body: { domain: "ide.school.edu" } });
   assert(cleared.domains.length === 0 && readFileSync(join(dir, "domains.txt"), "utf8") === "", "removing a domain clears the helper list");
 
-  assert(commandAllowed("power", "admin") && !commandAllowed("power", "teacher") && !commandAllowed("live", "student") && commandAllowed("share", "student") && !commandAllowed("home", "student") && commandAllowed("home", "teacher"), "discord command roles");
+  assert(commandAllowed("power", "admin") && !commandAllowed("power", "teacher") && !commandAllowed("power", "chapter_lead") && !commandAllowed("live", "student") && commandAllowed("live", "teacher") && commandAllowed("live", "chapter_lead") && commandAllowed("share", "student") && !commandAllowed("home", "student") && !commandAllowed("home", "teacher") && !commandAllowed("home", "chapter_lead") && commandAllowed("home", "teacher", { sessionLead: true }) && commandAllowed("home", "admin") && !commandAllowed("block", "teacher") && commandAllowed("block", "chapter_lead") && commandAllowed("block", "admin"), "discord command roles");
   assert(commandAllowed("login", "") && commandAllowed("ask", ""), "helpdesk registration is open");
   assert(!helpText("student").includes("/power") && helpText("admin").includes("/logins"), "discord help follows the role");
   const sharedCard = shareCard({ title: "Cards", language: "web", owner: "Sam", url: "https://74.248.20.108/#/project/1" });
@@ -612,6 +612,84 @@ try {
     body: JSON.stringify({ student: "Stu", project: "Cards", hours: 0 }),
   });
   assert(discordHours.status === 400, "home hours are bounded");
+  const teacherCode = await send("/api/discord/code", { method: "POST", cookie: (await login("teacher@teachforth.local", "teacher-demo")).cookie, body: {} });
+  const teacherClaim = await fetch(`${base}/api/discord/claim`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ code: teacherCode.code, discordId: "323456789012345679", discordName: "Teacher" }),
+  });
+  assert(teacherClaim.status === 200, "teacher can link discord");
+  const teacherHomeAfter = await fetch(`${base}/api/discord/home?discordId=323456789012345679`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ student: "Jordan", project: "First", hours: 2 }),
+  });
+  assert(teacherHomeAfter.status === 403, "only the current session lead can send someone home");
+  const supportCode = await send("/api/discord/support-code", { method: "POST", cookie: student.cookie, body: {} });
+  assert(/^[A-Z2-9]{8}$/.test(supportCode.code), "support code");
+  const freshLink = await send("/api/discord/code", { method: "POST", cookie: student.cookie, body: {} });
+  const linkAsSupport = await fetch(`${base}/api/discord/support/redeem`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ code: freshLink.code, channelId: "423456789012345678", teacherDiscordId: "123456789012345678" }),
+  });
+  assert(linkAsSupport.status === 400, "a link code is not a support code");
+  const noSecretSupport = await fetch(`${base}/api/discord/support/redeem`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: supportCode.code, channelId: "423456789012345678", teacherDiscordId: "123456789012345678" }),
+  });
+  assert(noSecretSupport.status === 401, "support redeem needs the helper secret");
+  const redeemed = await fetch(`${base}/api/discord/support/redeem`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ code: supportCode.code, channelId: "423456789012345678", teacherDiscordId: "123456789012345678" }),
+  });
+  const redeemedBody = await redeemed.json();
+  const redeemedText = JSON.stringify(redeemedBody);
+  assert(redeemed.status === 200 && redeemedBody.grant && !redeemedText.includes("password") && !redeemedText.includes("github_token") && !redeemedText.includes("token_hash"), "support redeem has no secrets");
+  const spent = await fetch(`${base}/api/discord/support/redeem`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ code: supportCode.code, channelId: "423456789012345678", teacherDiscordId: "123456789012345678" }),
+  });
+  assert(spent.status === 400, "support code is one-time");
+  const supportProjects = await fetch(`${base}/api/discord/support/projects`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ grant: redeemedBody.grant, channelId: "423456789012345678", teacherDiscordId: "123456789012345678" }),
+  });
+  const supportProjectsBody = await supportProjects.json();
+  const supportProjectsText = JSON.stringify(supportProjectsBody);
+  assert(supportProjects.status === 200 && !supportProjectsText.includes("password") && !supportProjectsText.includes("github_token"), "support projects stay in the consented account");
+  const wrongRoom = await fetch(`${base}/api/discord/support/projects`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ grant: redeemedBody.grant, channelId: "523456789012345678", teacherDiscordId: "123456789012345678" }),
+  });
+  assert(wrongRoom.status === 401, "support consent is bound to the ticket");
+  const leadUser = await login("lead@teachforth.local", "lead-demo-1");
+  const leadCode = await send("/api/discord/code", { method: "POST", cookie: leadUser.cookie, body: {} });
+  const leadClaim = await fetch(`${base}/api/discord/claim`, {
+    method: "POST",
+    headers: secretHeader,
+    body: JSON.stringify({ code: leadCode.code, discordId: "623456789012345678", discordName: "Lead" }),
+  });
+  assert(leadClaim.status === 200, "session lead can link discord");
+  const leadProfile = await fetch(`${base}/api/discord/profile?discordId=623456789012345678`, { headers: secretHeader });
+  const leadProfileBody = await leadProfile.json();
+  assert(leadProfile.status === 200 && leadProfileBody.sessionLead === true && leadProfileBody.role === "teacher", "profile marks the current session lead");
+  const studentProfile = await fetch(`${base}/api/discord/profile?discordId=223456789012345678`, { headers: secretHeader });
+  const studentProfileBody = await studentProfile.json();
+  assert(studentProfile.status === 200 && studentProfileBody.sessionLead === false, "a student is not the session lead");
+  const rosterDenied = await fetch(`${base}/api/discord/roster`);
+  assert(rosterDenied.status === 401, "roster needs the helper secret");
+  const roster = await fetch(`${base}/api/discord/roster`, { headers: secretHeader });
+  const rosterBody = await roster.json();
+  const rosterText = JSON.stringify(rosterBody);
+  const leadRow = (rosterBody.people || []).find((row) => row.discordId === "623456789012345678");
+  const studentRow = (rosterBody.people || []).find((row) => row.discordId === "223456789012345678");
+  assert(roster.status === 200 && leadRow?.sessionLead === true && leadRow.role === "teacher" && studentRow?.sessionLead === false && studentRow.role === "student" && !rosterText.includes("password") && !rosterText.includes("email") && !rosterText.includes("github_token"), "roster is role and session lead only");
   const setupView = await send("/api/discord/setup", { cookie: admin.cookie });
   assert(setupView.reachable === false && setupView.guildId === "", "discord setup stays blank when the helper is off");
   const studentSetup = await send("/api/discord/setup", { method: "POST", cookie: student.cookie, body: { guildId: "123456789012345678" }, ok: false });
