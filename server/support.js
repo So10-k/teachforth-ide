@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { isStaff } from "./org.js";
 import { createOwnedRepo, pace, peekFiles } from "./github.js";
 import { isHiddenFile, normalizeTemplate, starterEntries } from "./templates.js";
@@ -15,8 +16,8 @@ export async function supportRoute(ctx, path) {
   if (path === "/api/discord/support/projects" && (ctx.req.method === "GET" || ctx.req.method === "POST")) return listProjects(ctx);
   if (path === "/api/discord/support/reports" && (ctx.req.method === "GET" || ctx.req.method === "POST")) return listReports(ctx);
   if (path === "/api/discord/support/chapters" && (ctx.req.method === "GET" || ctx.req.method === "POST")) return listChapters(ctx);
-  if (path === "/api/discord/support/project" && (ctx.req.method === "GET" || ctx.req.method === "POST")) return viewProject(ctx);
-  if (path === "/api/discord/support/project" && ctx.req.method === "POST") return createProject(ctx);
+  if (path === "/api/discord/support/project" && ctx.req.method === "GET") return viewProject(ctx);
+  if (path === "/api/discord/support/project" && ctx.req.method === "POST") return projectPost(ctx);
   return false;
 }
 
@@ -83,6 +84,14 @@ async function listChapters(ctx) {
   ctx.send(ctx.res, 200, { person: publicPerson(person), chapters: chapterRows(ctx.db, person.id) });
 }
 
+async function projectPost(ctx) {
+  requireSecret(ctx);
+  const body = await ctx.readJson(ctx.req);
+  ctx._support = body || {};
+  if (Number(body?.id) > 0) return viewProject(ctx);
+  return createProject(ctx);
+}
+
 async function viewProject(ctx) {
   const person = await granted(ctx);
   const id = Number(ctx._support?.id || ctx.url?.searchParams.get("id") || 0);
@@ -114,7 +123,8 @@ async function viewProject(ctx) {
 
 async function createProject(ctx) {
   requireSecret(ctx);
-  const body = await ctx.readJson(ctx.req);
+  const body = ctx._support || await ctx.readJson(ctx.req);
+  ctx._support = body || {};
   const person = grantRow(ctx.db, body.grant, body.channelId);
   const title = String(body.title || "Blank").trim().slice(0, 80) || "Blank";
   const template = normalizeTemplate(body.template === "blank" ? "empty" : body.template || "empty");
@@ -160,6 +170,7 @@ async function createProject(ctx) {
 
 async function granted(ctx) {
   requireSecret(ctx);
+  if (ctx._support) return grantRow(ctx.db, ctx._support.grant, ctx._support.channelId);
   if (ctx.req.method === "POST") {
     const body = await ctx.readJson(ctx.req);
     ctx._support = body || {};
@@ -279,14 +290,13 @@ function teacherOf(ctx) {
 
 function requireSecret(ctx) {
   const given = String(ctx.req.headers["x-teachforth-discord"] || "");
-  const file = process.env.DISCORD_SECRET_FILE || "";
-  let secret = "";
-  try {
-    secret = file ? readFileSync(file, "utf8").trim() : "";
-  } catch {
-    secret = "";
-  }
-  if (!secret || !same(secret, given)) ctx.fail(401, "Sign in first");
+  if (!readSecret() || !same(readSecret(), given)) ctx.fail(401, "Sign in first");
+}
+
+function readSecret() {
+  const file = process.env.DISCORD_SECRET_FILE || join(process.env.DATA_DIR || "", "discord-secret");
+  if (!file || !existsSync(file)) return "";
+  return readFileSync(file, "utf8").trim();
 }
 
 function same(secret, given) {
