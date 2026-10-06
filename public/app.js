@@ -139,7 +139,7 @@ function shell(active) {
           sideLink(active, "people", "#/people", "Directory"),
           me.role === "admin" ? sideLink(active, "accounts", "#/accounts", "Accounts") : "",
           me.role === "admin" ? sideLink(active, "domains", "#/domains", "Domains") : "",
-          me.role === "admin" ? sideLink(active, "data", "#/data", "Database") : "",
+          me.role === "admin" ? sideLink(active, "data", "/db/", "Database") : "",
         ]) : ""}
         ${lead ? sideGroup("Class", [
           sideLink(active, "chapters", "#/chapters", "Chapters"),

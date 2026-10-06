@@ -1,5 +1,3 @@
-import { renderData } from "./data.js";
-
 export async function renderPortal({ section, main, me, api, esc, ago, powerUrl }) {
   const id = Number(location.hash.split("/")[2] || 0);
   if (section === "chapters") return chaptersPage(main, me, api, esc);
@@ -12,7 +10,7 @@ export async function renderPortal({ section, main, me, api, esc, ago, powerUrl 
   if (section === "roster") return pairingPage(main, api, esc);
   if (section === "sandbox") return sandboxPage(main, me, api, esc, ago);
   if (section === "github") return githubPage(main, me, api, esc);
-  if (section === "data") return renderData({ main, me, api, esc });
+  if (section === "data") { location.href = "/db/"; return; }
   if (section === "center") return centerPage(main, api, esc);
   return homePage(main, me, api, esc, powerUrl);
 }
@@ -42,7 +40,7 @@ function homeJumps(me, powerUrl) {
   if (me.role === "admin") {
     items.push(["#/accounts", "Accounts", "Create a login"]);
     items.push(["#/domains", "Domains", "Serve the IDE on another name"]);
-    items.push(["#/data", "Database", "Browse class data without SQL"]);
+    items.push(["/db/", "Database", "Open the class database"]);
     items.push([powerUrl, "Power panel", "Start or stop the server"]);
   }
   return `<section class="goto"><h2 class="unit">Go to</h2>${jumps(items)}</section>`;
