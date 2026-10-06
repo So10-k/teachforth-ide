@@ -40,16 +40,24 @@ const LANG_ICON = {
 };
 
 window.addEventListener("pagehide", () => {
-  if (closing || session?.me?.role !== "student" || editorState?.project?.kind !== "github") return;
-  navigator.sendBeacon?.(
-    `/api/projects/${editorState.id}/close`,
-    new Blob([JSON.stringify({})], { type: "application/json" }),
-  );
+  if (closing || !editorState?.id) return;
+  rememberBackup();
+  const file = editorState.files?.find((item) => item.path === editorState.active);
+  if (!file) return;
+  const content = currentContent();
+  if (!content) return;
+  fetch(`/api/projects/${editorState.id}/files`, {
+    method: "PUT",
+    keepalive: true,
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: file.path, content, baseRevision: file.baseRevision }),
+  }).catch(() => {});
 });
 
 export async function openEditor({ app, id, me, api, esc }) {
   interrupt(true);
-  session = { me, api, esc };
+  session = { me, api, esc, app };
   closing = false;
   let opened;
   try {
@@ -114,7 +122,8 @@ export async function openEditor({ app, id, me, api, esc }) {
       <button id="back">Back</button>
     </header>
     ${teacher ? `<div class="banner">You are in ${esc(opened.project.ownerName)}'s project. Please remember to instruct your student to commit their code to Github by clicking the "Back" button, or have a session lead commit it.</div>` : ""}
-    ${!teacher && opened.project.kind === "github" ? `<div class="banner">Closing this project commits to your GitHub and removes the code from TeachForth.</div>` : ""}
+    ${!teacher && opened.project.kind === "github" ? `<div class="banner">Back saves this project to GitHub. Reloading keeps the files here.</div>` : ""}
+    <div id="recover-banner" class="banner" hidden></div>
     <div class="ide-body">
       <nav class="activity" aria-label="Views">
         <button class="on" data-view="files" title="Explorer" aria-label="Explorer">${ICON.files}</button>
@@ -159,6 +168,7 @@ export async function openEditor({ app, id, me, api, esc }) {
     <footer class="statusbar"><span id="status-file">No file</span><span class="spacer"></span><span id="status-lang"></span></footer>
   </div>`;
   document.querySelector("#back").onclick = () => leaveProject();
+  showRecovery(opened);
   document.querySelector("#run").onclick = play;
   document.querySelector("#play").onclick = play;
   document.querySelector("#open-window").onclick = openPreview;
@@ -207,7 +217,7 @@ async function leaveProject() {
     try {
       closing = true;
       await flush();
-      await session.api(`/api/projects/${editorState.id}/close`, { method: "POST", body: {} });
+      await session.api(`/api/projects/${editorState.id}/close`, { method: "POST", body: { confirm: true } });
     } catch (err) {
       closing = false;
       setSaveState(err.message, /link github/i.test(err.message) ? "/api/github/connect" : "");
@@ -792,6 +802,52 @@ function currentContent() {
   return cmEditor ? cmEditor.getValue() : (document.querySelector("#code")?.value || "");
 }
 
+function rememberBackup() {
+  if (!editorState?.id || !editorState.files?.length) return;
+  const files = editorState.files.map((file) => ({
+    path: file.path,
+    content: file.path === editorState.active ? currentContent() : String(file.content ?? ""),
+  })).filter((file) => file.path);
+  if (!files.some((file) => file.content.length)) return;
+  try {
+    localStorage.setItem(`tf-backup:${editorState.id}`, JSON.stringify({ at: Date.now(), files }));
+  } catch {
+    // A full browser store must not block the editor.
+  }
+}
+
+function savedBackup(id) {
+  try {
+    return JSON.parse(localStorage.getItem(`tf-backup:${id}`) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function showRecovery(opened) {
+  const banner = document.querySelector("#recover-banner");
+  if (!banner || !editorState) return;
+  const have = new Map((editorState.files || []).map((file) => [file.path, String(file.content || "")]));
+  const gaps = (savedBackup(editorState.id)?.files || []).filter((file) => file?.path && file.content && (!have.has(file.path) || !have.get(file.path).length));
+  const restored = opened.recovery?.paths || [];
+  if (!gaps.length && !restored.length) return;
+  banner.hidden = false;
+  if (gaps.length) {
+    banner.innerHTML = `Some files are missing on the server. <button type="button" id="restore-backup">Put the browser copy back</button>`;
+    banner.querySelector("#restore-backup").onclick = async () => {
+      banner.querySelector("#restore-backup").disabled = true;
+      try {
+        await session.api(`/api/projects/${editorState.id}/restore`, { method: "POST", body: { files: gaps } });
+        openEditor({ app: session.app, id: editorState.id, me: session.me, api: session.api, esc: session.esc });
+      } catch (err) {
+        banner.textContent = err.message;
+      }
+    };
+    return;
+  }
+  banner.textContent = `Restored ${restored.length} missing file${restored.length === 1 ? "" : "s"} from the class copy.`;
+}
+
 function markDirty() {
   if (!editorState || !activeFile()) return;
   editorState.dirty = true;
@@ -815,6 +871,7 @@ async function flush(attempt = 0) {
   const file = activeFile();
   if (!file) return;
   const content = currentContent();
+  rememberBackup();
   const gen = ++saveGeneration;
   const path = file.path;
   const baseRevision = file.baseRevision ?? editorState.project.revision;
@@ -1456,10 +1513,7 @@ async function onTermSubmit(event) {
   termHistory.push(command);
   historyIndex = termHistory.length;
   commitShellLine(command);
-  if (activeRun) {
-    termLine("A program is running. Press Ctrl+C or ■ to stop it.", "muted");
-    return;
-  }
+  if (activeRun) interrupt(true);
   await dispatch(parseCommand(command));
 }
 

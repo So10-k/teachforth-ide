@@ -14,6 +14,8 @@ import { publicSlug, publishedUrl, removeSite, siteFiles, writeSite } from "./pu
 import { endRun, pushLine, startRun, waitLine } from "./runtime.js";
 import { ensureControls, fileViews, controlView, publicControl, studentWriteBlock, setFileFlag, setBoardControl, moveFlags, clearFlags, flagMap, isLeadPlus, studentMaySeePath } from "./controls.js";
 import { planSteps, startSandbox, readSandbox, writeSandboxStdin, stopSandbox } from "./sandbox.js";
+import { ensureRecovery, restoreIfEmpty } from "./recover.js";
+import { dbAdminRoute } from "./dbadmin.js";
 import { mintPreview, previewProject, previewBody } from "./preview-site.js";
 import { addDomain, listDomains, reapplyDomains, removeDomain } from "./domains.js";
 import { discordRoute, notifyDiscord } from "./discord.js";
@@ -78,6 +80,7 @@ const hub = createHub();
 
 const db = openDatabase(DB_FILE);
 ensureControls(db);
+ensureRecovery(db);
 configureHome(DATA_DIR);
 ensureHome(db);
 seed();
@@ -479,6 +482,8 @@ async function route(req, res, url) {
       days: db.prepare("SELECT * FROM usage_days ORDER BY day DESC LIMIT 14").all(),
     });
   }
+  if (await dbAdminRoute({ req, res, url, user, path, db, send, fail, readJson, audit }, path) !== false) return;
+
   if (path === "/api/audit" && req.method === "GET") {
     requireRole(user, "admin");
     return send(res, 200, { audit: recentAudit() });
@@ -517,6 +522,7 @@ async function projectRoute(req, res, url, user, id, rest) {
     if (project.kind === "github" && project.open) {
       if (await pullIfGithubNewer(db, project)) project = loadProject(id);
     }
+    const recovery = restoreIfEmpty(db, id);
     audit(user, "open_project", project.id, project.title);
     bumpUsage(db, "editor_opens");
     notePresence(project.id, user);
@@ -526,6 +532,7 @@ async function projectRoute(req, res, url, user, id, rest) {
       viewers: viewersOf(id, user),
       controls: controlView(db, user, project),
       board: boardFor(project),
+      recovery,
     });
   }
   if (req.method === "GET" && rest === "/state") return projectState(res, url, user, id);
@@ -551,8 +558,9 @@ async function projectRoute(req, res, url, user, id, rest) {
     return send(res, 200, { viewers: viewersOf(id) });
   }
   if (req.method === "GET" && rest === "/export.zip") return exportZip(res, user, project);
-  if (req.method === "POST" && rest === "/github") return pushGithub(res, user, project);
-  if (req.method === "POST" && rest === "/close") return closeProject(res, user, project);
+  if (req.method === "POST" && rest === "/github") return pushGithub(req, res, user, project);
+  if (req.method === "POST" && rest === "/restore") return restoreFiles(req, res, user, project);
+  if (req.method === "POST" && rest === "/close") return closeProject(req, res, user, project);
   if (req.method === "DELETE" && rest === "") return deleteProject(res, user, project);
   fail(404, "Not found");
 }
@@ -1147,12 +1155,41 @@ function exportZip(res, user, project) {
   res.end(zip);
 }
 
-async function pushGithub(res, user, project) {
-  return closeProject(res, user, project);
+async function pushGithub(req, res, user, project) {
+  return closeProject(req, res, user, project);
 }
 
-async function closeProject(res, user, project) {
+async function restoreFiles(req, res, user, project) {
+  const body = await readJson(req);
+  const incoming = Array.isArray(body.files) ? body.files.slice(0, 40) : [];
+  const now = new Date().toISOString();
+  const paths = [];
+  for (const file of incoming) {
+    const path = cleanPath(file.path);
+    if (isHiddenFile(path)) continue;
+    const content = String(file.content ?? "");
+    if (!content.length || content.length > 200_000) continue;
+    const existing = db.prepare("SELECT content FROM files WHERE project_id = ? AND path = ?").get(project.id, path);
+    if (existing && String(existing.content || "").length) continue;
+    if (existing) {
+      db.prepare("UPDATE files SET content = ?, updated_at = ? WHERE project_id = ? AND path = ?").run(content, now, project.id, path);
+    } else {
+      db.prepare("INSERT INTO files (project_id, path, content, updated_at) VALUES (?, ?, ?, ?)").run(project.id, path, content, now);
+    }
+    recordRevision(db, project.id, path, content, user.id);
+    paths.push(path);
+  }
+  if (paths.length) {
+    db.prepare("UPDATE projects SET revision = revision + 1, updated_at = ? WHERE id = ?").run(now, project.id);
+    audit(user, "restore_files", project.id, paths.join(",").slice(0, 180));
+  }
+  send(res, 200, { paths, files: editorFiles(project.id, user), revision: loadProject(project.id).revision });
+}
+
+async function closeProject(req, res, user, project) {
   if (project.kind !== "github") fail(400, "Only a GitHub project commits when it is closed");
+  const body = await readJson(req);
+  if (body.confirm !== true) fail(400, "Refresh the page, then use Back to save to GitHub.");
   const result = await commitStudentProject(db, user, project, filesOf(project.id));
   audit(user, "github_commit", project.id, result.sha);
   send(res, 200, result);

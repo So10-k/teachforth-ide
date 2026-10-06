@@ -9,6 +9,7 @@ export const DISPLAY_PREFIX = "{TeachForth} ";
 
 import { isHiddenFile, normalizeTemplate, projectLanguage, starterList } from "./templates.js";
 import { commitFileList, flagMap } from "./controls.js";
+import { ensureRecovery, loadBases, mergePulled, rememberBases, restoreIfEmpty, snapshotFiles } from "./recover.js";
 
 export function originOf(req) {
   if (process.env.PUBLIC_ORIGIN) return process.env.PUBLIC_ORIGIN.replace(/\/$/, "");
@@ -142,17 +143,13 @@ export async function commitStudentProject(db, user, project, files, options = {
   const [login, repo] = String(project.github_repo || "").split("/");
   if (!login || !repo) fail(400, "This project is not a GitHub repository");
   const message = options.message || `TeachForth save ${new Date().toISOString().slice(0, 16)}`;
-  const result = await commitFiles(
-    owner.github_token,
-    login,
-    repo,
-    commitFileList(db, project.id, withMarker(files, studentCode(db, owner.id))),
-    message,
-  );
+  snapshotFiles(db, project.id);
+  const committed = commitFileList(db, project.id, withMarker(files, studentCode(db, owner.id)));
+  const result = await commitFiles(owner.github_token, login, repo, committed, message);
+  rememberBases(db, project.id, committed);
   const now = new Date().toISOString();
   if (!options.keep) {
     db.prepare("DELETE FROM files WHERE project_id = ?").run(project.id);
-    db.prepare("DELETE FROM file_revisions WHERE project_id = ?").run(project.id);
     db.prepare("UPDATE projects SET open = 0, github_sha = ?, github_url = ?, updated_at = ? WHERE id = ?").run(
       result.sha,
       result.url,
@@ -347,17 +344,23 @@ export async function hydrateProject(db, project) {
   const files = await pullRepo(owner.github_token, login, repo);
   const sha = await remoteHead(owner.github_token, login, repo);
   const now = new Date().toISOString();
-  db.exec("BEGIN");
-  try {
-    db.prepare("DELETE FROM files WHERE project_id = ?").run(project.id);
-    const insert = db.prepare("INSERT INTO files (project_id, path, content, updated_at) VALUES (?, ?, ?, ?)");
-    const source = withMarker(files.length ? files : starter(project.language), studentCode(db, owner.id));
-    for (const file of source) insert.run(project.id, file.path, file.content, now);
-    db.prepare("UPDATE projects SET open = 1, github_sha = ?, updated_at = ? WHERE id = ?").run(sha || project.github_sha || "", now, project.id);
-    db.exec("COMMIT");
-  } catch (err) {
-    db.exec("ROLLBACK");
-    throw err;
+  const local = db.prepare("SELECT path, content FROM files WHERE project_id = ?").all(project.id);
+  if (!files.length) {
+    restoreIfEmpty(db, project.id);
+    const kept = db.prepare("SELECT path, content FROM files WHERE project_id = ?").all(project.id);
+    if (!kept.some((file) => String(file.content || "").length)) {
+      replaceProjectFiles(db, project, withMarker(starter(project.language), studentCode(db, owner.id)), [], sha, now, true);
+    } else {
+      db.prepare("UPDATE projects SET open = 1, github_sha = ?, updated_at = ? WHERE id = ?").run(sha || project.github_sha || "", now, project.id);
+    }
+    return db.prepare("SELECT * FROM projects WHERE id = ?").get(project.id);
+  }
+  const merged = mergePulled(local, loadBases(db, project.id), files, flagMap(db, project.id));
+  if (!merged.refused) {
+    snapshotFiles(db, project.id);
+    replaceProjectFiles(db, project, withMarker(merged.files, studentCode(db, owner.id)), merged.taken, sha, now, true);
+  } else {
+    db.prepare("UPDATE projects SET open = 1, updated_at = ? WHERE id = ?").run(now, project.id);
   }
   return db.prepare("SELECT * FROM projects WHERE id = ?").get(project.id);
 }
@@ -675,8 +678,7 @@ export async function pullIfGithubNewer(db, project) {
     if (!sha || sha === project.github_sha) return false;
     const files = await pullRepo(owner.github_token, login, repo);
     if (!files.length) return false;
-    applyPulledFiles(db, project, files, sha);
-    return true;
+    return applyPulledFiles(db, project, files, sha);
   } catch (err) {
     console.error("pull-newer", project.id, err.publicMessage || err.message);
     return false;
@@ -684,20 +686,33 @@ export async function pullIfGithubNewer(db, project) {
 }
 
 export function applyPulledFiles(db, project, files, sha) {
-  const flags = flagMap(db, project.id);
+  if (!files?.length) return false;
   const local = db.prepare("SELECT path, content FROM files WHERE project_id = ?").all(project.id);
-  const keep = keptLocalFiles(local, flags, files);
-  const now = new Date().toISOString();
+  const merged = mergePulled(local, loadBases(db, project.id), files, flagMap(db, project.id));
+  if (merged.refused) return false;
+  snapshotFiles(db, project.id);
+  replaceProjectFiles(db, project, merged.files, merged.taken, sha, new Date().toISOString(), false);
+  return true;
+}
+
+function replaceProjectFiles(db, project, files, taken, sha, now, opening) {
+  ensureRecovery(db);
+  const takenSet = new Set(taken || []);
   db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM files WHERE project_id = ?").run(project.id);
     const insert = db.prepare("INSERT INTO files (project_id, path, content, updated_at) VALUES (?, ?, ?, ?)");
-    for (const file of [...files, ...keep]) insert.run(project.id, file.path, String(file.content ?? ""), now);
-    db.prepare("UPDATE projects SET github_sha = ?, revision = revision + 1, updated_at = ? WHERE id = ?").run(
-      sha || project.github_sha || "",
-      now,
-      project.id,
-    );
+    for (const file of files) insert.run(project.id, file.path, String(file.content ?? ""), now);
+    rememberBases(db, project.id, files.filter((file) => takenSet.has(file.path)));
+    if (opening) {
+      db.prepare("UPDATE projects SET open = 1, github_sha = ?, updated_at = ? WHERE id = ?").run(sha || project.github_sha || "", now, project.id);
+    } else {
+      db.prepare("UPDATE projects SET github_sha = ?, revision = revision + 1, updated_at = ? WHERE id = ?").run(
+        sha || project.github_sha || "",
+        now,
+        project.id,
+      );
+    }
     db.exec("COMMIT");
   } catch (err) {
     db.exec("ROLLBACK");

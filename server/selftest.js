@@ -2,7 +2,9 @@ import { displayTitle, githubScope, isTeachforthRepo, keptLocalFiles, oauthState
 import { preferBoard } from "./live.js";
 import { studentMaySeePath } from "./controls.js";
 import { safeRel } from "../deploy/home-server.js";
-import { planSteps } from "./sandbox.js";
+import { admitRun, planSteps } from "./sandbox.js";
+import { mergePulled } from "./recover.js";
+import { maskRow } from "./dbadmin.js";
 import { rewriteHtml } from "./preview-site.js";
 import { runJava } from "../public/java-lang.js";
 import { publicSlug, siteFiles } from "./publish.js";
@@ -107,6 +109,21 @@ assert(preferBoard(null, { slides: [{ strokes: [{ id: "a" }] }] }).slides[0].str
 assert(preferBoard({ slides: [{ strokes: [] }] }, { slides: [{ strokes: [{ id: "a" }] }] }).slides[0].strokes[0].id === "a", "empty live board does not erase saved strokes");
 assert(preferBoard({ slides: [{ strokes: [{ id: "b" }] }] }, { slides: [{ strokes: [{ id: "a" }] }] }).slides[0].strokes[0].id === "b", "live strokes win");
 assert(!studentMaySeePath("student", ".teachforth", false) && !studentMaySeePath("student", "notes.md", true) && studentMaySeePath("teacher", ".teachforth", false), "students do not receive hidden files");
+const slots = admitRun(7, new Map([
+  ["done", { userId: 7, done: true }],
+  ["mine", { userId: 7, done: false }],
+  ["other", { userId: 8, done: false }],
+]));
+assert(slots.stop.length === 1 && slots.stop[0] === "mine" && slots.running === 1 && slots.allowed, "finished runs do not take a slot");
+const merged = mergePulled(
+  [{ path: "main.py", content: "print(1)\n" }, { path: "notes.txt", content: "class only" }],
+  new Map([["main.py", "print(0)\n"]]),
+  [{ path: "main.py", content: "print(2)\n" }],
+);
+assert(merged.files.some((file) => file.path === "notes.txt") && merged.files.find((file) => file.path === "main.py").content === "print(1)\n", "a pull keeps diverged and local-only files");
+const emptyPull = mergePulled([{ path: "main.py", content: "print(1)" }], new Map(), []);
+assert(emptyPull.refused && emptyPull.files[0].content === "print(1)", "an empty pull does not wipe files");
+assert(maskRow("users", { password_hash: "secret", name: "Ada" }).password_hash === "••••", "database browser masks passwords");
 
 try {
   await waitForHealth();
@@ -122,6 +139,12 @@ try {
   assert(projects.projects.length === 1, "teacher sees assigned project");
 
   const student = await login("student@teachforth.local", "student-demo");
+  const dbTables = await send("/api/db/tables", { cookie: admin.cookie });
+  assert(dbTables.tables.some((table) => table.name === "users"), "admin can browse tables");
+  const dbDenied = await send("/api/db/tables", { cookie: student.cookie, ok: false });
+  assert(dbDenied.status === 403, "student cannot browse the database");
+  const dbUsers = await send("/api/db/tables/users?limit=5", { cookie: admin.cookie });
+  assert(dbUsers.rows.every((row) => row.password_hash === "••••"), "password hashes are not returned");
   const own = await send("/api/projects", { cookie: student.cookie });
   assert(own.projects[0].notes === "", "student does not see teacher notes");
 

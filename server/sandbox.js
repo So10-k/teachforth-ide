@@ -6,7 +6,7 @@ import { join, normalize } from "node:path";
 import { isHiddenFile } from "./templates.js";
 
 const jobs = new Map();
-const MAX_JOBS = 2;
+const MAX_JOBS = 40;
 const MAX_OUT = 200_000;
 const HELPER = process.env.TF_SANDBOX_BIN || "/usr/local/lib/teachforth/tf-sandbox";
 const JOB_ROOT = process.env.TF_JOB_ROOT || "/var/lib/teachforth-run/jobs";
@@ -58,9 +58,22 @@ export function runnableFiles(files) {
   return (files || []).filter((file) => file?.path && !isHiddenFile(file.path) && !file.hidden);
 }
 
+export function admitRun(userId, jobsMap = jobs, limit = MAX_JOBS) {
+  const stop = [];
+  let running = 0;
+  for (const [id, job] of jobsMap) {
+    if (!job || job.done || job.stopping) continue;
+    if (job.userId === userId) stop.push(id);
+    else running += 1;
+  }
+  return { running, stop, allowed: running < limit };
+}
+
 export function startSandbox({ userId, files, steps }) {
   if (!steps?.length) fail(400, "Nothing to run");
-  if (jobs.size >= MAX_JOBS) fail(429, "Too many programs are running. Stop one and try again.");
+  const gate = admitRun(userId);
+  if (!gate.allowed) fail(429, "Too many programs are running. Stop one and try again.");
+  for (const old of gate.stop) stopSandbox(old, userId);
   const helper = existsSync(HELPER);
   if (!helper && process.getuid?.() !== 0) fail(503, "The language sandbox is not installed on this server");
   const id = randomBytes(16).toString("hex");
@@ -113,6 +126,7 @@ export function writeSandboxStdin(id, userId, line) {
 export function stopSandbox(id, userId) {
   const job = jobs.get(id);
   if (!job || job.userId !== userId) return false;
+  job.stopping = true;
   if (job.helper) spawn("sudo", ["-n", HELPER, "--stop", id], { stdio: "ignore" }).unref?.();
   job.child.kill("SIGTERM");
   return true;

@@ -386,6 +386,10 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
 .admin-layout { display: grid; grid-template-columns: 1.35fr .8fr; gap: 16px; align-items: start; }
 .form-card { display: flex; flex-direction: column; gap: 10px; }
 .form-card .btn, .form-card input, .form-card select { width: 100%; }
+.data-scroll { overflow: auto; border: 1px solid var(--line, #3a3344); border-radius: 10px; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th, .data-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line, #3a3344); white-space: nowrap; max-width: 240px; overflow: hidden; }
+.data-table tr { cursor: pointer; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
 .form-row .btn { width: auto; }
 .table-card { padding: 6px 12px; }

@@ -84,6 +84,7 @@ function section() {
   if (hash.startsWith("#/center")) return "center";
   if (hash.startsWith("#/roster")) return "roster";
   if (hash.startsWith("#/github")) return "github";
+  if (hash.startsWith("#/data")) return "data";
   return "home";
 }
 
@@ -138,6 +139,7 @@ function shell(active) {
           sideLink(active, "people", "#/people", "Directory"),
           me.role === "admin" ? sideLink(active, "accounts", "#/accounts", "Accounts") : "",
           me.role === "admin" ? sideLink(active, "domains", "#/domains", "Domains") : "",
+          me.role === "admin" ? sideLink(active, "data", "#/data", "Database") : "",
         ]) : ""}
         ${lead ? sideGroup("Class", [
           sideLink(active, "chapters", "#/chapters", "Chapters"),
@@ -587,7 +589,7 @@ async function leaveProject() {
   if (me?.role === "student" && editorState?.project?.kind === "github") {
     try {
       await flush();
-      await api(`/api/projects/${editorState.id}/close`, { method: "POST", body: {} });
+      await api(`/api/projects/${editorState.id}/close`, { method: "POST", body: { confirm: true } });
     } catch (err) {
       setSaveState(err.message);
       return;
